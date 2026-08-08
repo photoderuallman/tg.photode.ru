@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Telegram gateway status</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+    <script src="/static/js/app.js" defer></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">tg.photode.ru / private operator console</p>
+          <h1>Connection readiness</h1>
+        </div>
+        <button class="refresh" id="refresh-status" type="button">Check now</button>
+      </header>
+
+      <section class="route" aria-labelledby="route-title">
+        <div class="section-heading">
+          <h2 id="route-title">Browser → Telegram</h2>
+          <p id="last-checked" aria-live="polite">Not checked yet</p>
+        </div>
+
+        <ol class="route-list">
+          <li class="route-node" data-component="app">
+            <span class="node-index">01</span>
+            <div class="node-copy">
+              <h3>Web application</h3>
+              <p>Waiting for the first health check.</p>
+            </div>
+            <span class="state" data-state="waiting">Waiting</span>
+          </li>
+          <li class="route-node" data-component="vpn">
+            <span class="node-index">02</span>
+            <div class="node-copy">
+              <h3>Server VPN</h3>
+              <p>Waiting for the first health check.</p>
+            </div>
+            <span class="state" data-state="waiting">Waiting</span>
+          </li>
+          <li class="route-node" data-component="telegram_network">
+            <span class="node-index">03</span>
+            <div class="node-copy">
+              <h3>Telegram network</h3>
+              <p>Waiting for the first health check.</p>
+            </div>
+            <span class="state" data-state="waiting">Waiting</span>
+          </li>
+          <li class="route-node" data-component="telegram_auth">
+            <span class="node-index">04</span>
+            <div class="node-copy">
+              <h3>Telegram account</h3>
+              <p>Waiting for the first health check.</p>
+            </div>
+            <span class="state" data-state="waiting">Waiting</span>
+          </li>
+        </ol>
+      </section>
+
+      <section class="auth-panel" aria-labelledby="auth-title">
+        <div>
+          <p class="eyebrow">Next controlled step</p>
+          <h2 id="auth-title">Telegram authorization</h2>
+          <p id="auth-next">The authorization controls remain locked until TDLib and the VPN are ready.</p>
+        </div>
+        <button type="button" disabled>Authorization unavailable</button>
+      </section>
+
+      <footer>
+        <p>No Telegram credentials are stored in this browser.</p>
+      </footer>
+    </main>
+  </body>
+</html>

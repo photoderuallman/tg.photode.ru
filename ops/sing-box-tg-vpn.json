@@ -1,0 +1,42 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tg-vpn-in",
+      "interface_name": "tg-vpn",
+      "address": [
+        "172.19.0.1/30"
+      ],
+      "mtu": 1400,
+      "auto_route": true,
+      "auto_redirect": false,
+      "strict_route": false,
+      "route_exclude_address": [
+        "194.58.125.120/32",
+        "194.67.94.40/32"
+      ],
+      "include_uid": [
+        989
+      ]
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "socks",
+      "tag": "vpn-out",
+      "server": "127.0.0.1",
+      "server_port": 18082
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "final": "vpn-out"
+  }
+}

@@ -1,0 +1,25 @@
+[Unit]
+Description=Personal Telegram Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tgapp
+Group=tgapp
+WorkingDirectory=/opt/tg-photode
+EnvironmentFile=/etc/tg-photode/tg-photode.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/tg-photode/.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tg-photode
+
+[Install]
+WantedBy=multi-user.target
