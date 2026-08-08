@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>Telegram gateway status</title>
-    <link rel="stylesheet" href="/static/css/app.css">
+    <link rel="stylesheet" href="/static/css/app.css?v=20260808-1">
     <script src="/static/js/app.js" defer></script>
   </head>
   <body>
@@ -60,17 +60,58 @@
         </ol>
       </section>
 
-      <section class="auth-panel" aria-labelledby="auth-title">
-        <div>
-          <p class="eyebrow">Next controlled step</p>
-          <h2 id="auth-title">Telegram authorization</h2>
-          <p id="auth-next">The authorization controls remain locked until TDLib and the VPN are ready.</p>
+      <section class="auth-panel" id="authorization" data-auth-state="not_configured" aria-labelledby="auth-title">
+        <div class="auth-heading">
+          <div>
+            <p class="eyebrow">Controlled handshake</p>
+            <h2 id="auth-title">Telegram authorization</h2>
+          </div>
+          <span class="auth-mode" id="auth-mode">Live path locked</span>
         </div>
-        <button type="button" disabled>Authorization unavailable</button>
+
+        <p class="auth-next" id="auth-next">
+          The authorization controls remain locked until TDLib and API credentials are ready.
+        </p>
+
+        <ol class="auth-rail" aria-label="Authorization progress">
+          <li class="auth-step is-active" data-auth-step="api">
+            <span class="auth-step-marker">A</span>
+            <span>API</span>
+          </li>
+          <li class="auth-step" data-auth-step="number">
+            <span class="auth-step-marker">N</span>
+            <span>Number</span>
+          </li>
+          <li class="auth-step" data-auth-step="proof">
+            <span class="auth-step-marker">P</span>
+            <span>Proof</span>
+          </li>
+          <li class="auth-step" data-auth-step="ready">
+            <span class="auth-step-marker">R</span>
+            <span>Ready</span>
+          </li>
+        </ol>
+
+        <form class="auth-form" id="auth-form" novalidate hidden>
+          <label for="auth-input" id="auth-label">Phone number</label>
+          <div class="auth-control">
+            <input id="auth-input" name="authorization" type="text" autocomplete="off" disabled>
+            <button class="auth-submit" id="auth-submit" type="submit">Continue</button>
+          </div>
+          <p class="auth-helper" id="auth-helper"></p>
+        </form>
+
+        <div class="auth-locked" id="auth-locked">
+          <span aria-hidden="true">↳</span>
+          <p id="auth-locked-text">Waiting for the TDLib adapter and private API credentials.</p>
+        </div>
+
+        <p class="auth-feedback" id="auth-feedback" role="status" aria-live="polite"></p>
+        <p class="auth-privacy">Inputs are sent only to this private backend and cleared after each attempt.</p>
       </section>
 
       <footer>
-        <p>No Telegram credentials are stored in this browser.</p>
+        <p>No Telegram credentials are stored in this browser or repository.</p>
       </footer>
     </main>
   </body>

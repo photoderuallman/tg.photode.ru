@@ -1,15 +1,17 @@
 # Personal Telegram Gateway
 
-A private, single-user Telegram web client. The browser talks only to this FastAPI backend. Telegram integration will later be provided by TDLib behind a `TelegramService` boundary.
+A private, single-user Telegram web client. The browser talks only to this FastAPI backend. Telegram authorization is provided by TDLib behind a `TelegramService` boundary.
 
 ## Current scope
 
 This foundation provides:
 
 - FastAPI liveness and component-status endpoints
-- a minimal operator UI for app, VPN, Telegram network, and authorization readiness
-- a `TelegramService` protocol with a non-networked mock implementation
-- no Telegram credentials or TDLib calls yet
+- a private operator UI for app, VPN, Telegram network, and authorization readiness
+- a normalized phone → code → optional 2FA authorization API and UI
+- a `TelegramService` protocol with both mock and native TDLib implementations
+- persistent encrypted TDLib session storage outside the repository
+- a real phone → code → optional 2FA authorization flow through the private UI
 
 VPN credentials are Linux infrastructure secrets. They must never be stored in this repository or mixed into application configuration.
 
@@ -45,6 +47,27 @@ python3 -m venv .venv
 
 Open <http://127.0.0.1:8000>.
 
+Run the authorization simulator with dummy values only:
+
+```bash
+TELEGRAM_AUTH_MODE=mock \
+TELEGRAM_MOCK_REQUIRE_PASSWORD=true \
+.venv/bin/python -m uvicorn backend.main:app --reload
+```
+
+Mock inputs are validated, passed through the same application boundary as TDLib,
+and immediately discarded. They are not logged or stored by the service.
+
+Real TDLib mode requires Debian's packaged runtime plus protected environment values:
+
+```bash
+sudo apt-get install libtdjson1.8.38
+```
+
+Set `TELEGRAM_AUTH_MODE=tdlib`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and a
+random `TDLIB_DATABASE_ENCRYPTION_KEY` only in the server environment file. TDLib's
+database and files directories must be writable by the application service account.
+
 Run tests:
 
 ```bash
@@ -55,7 +78,12 @@ Run tests:
 
 - `GET /api/health` — process liveness
 - `GET /api/status` — normalized application, VPN, Telegram network, and authorization readiness
+- `GET /api/telegram/auth` — normalized authorization state
+- `POST /api/telegram/auth/phone` — submit an international phone number
+- `POST /api/telegram/auth/code` — submit the current authorization code
+- `POST /api/telegram/auth/password` — submit the optional two-step verification password
 
 ## Next controlled step
 
-Install TDLib behind the existing `TelegramService` boundary. Store `api_id` and `api_hash` only in the VPS environment file, then expose the TDLib authorization states for phone number, login code, and optional 2FA password through the private UI.
+After the private UI reaches `ready`, add chat-list and message methods to the existing
+`TelegramService` boundary. Keep raw TDLib objects and commands out of browser routes.

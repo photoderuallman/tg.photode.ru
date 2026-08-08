@@ -5,7 +5,13 @@ import socket
 from datetime import UTC, datetime
 
 from backend.config import Settings
-from backend.models import ComponentState, ComponentStatus, SystemStatus
+from backend.models import (
+    ComponentState,
+    ComponentStatus,
+    SystemStatus,
+    TelegramAuthorizationState,
+    TelegramAuthorizationStatus,
+)
 from backend.telegram.base import TelegramService
 
 
@@ -80,6 +86,8 @@ async def build_system_status(
             next_action=None if reachable else "Inspect the VPN service and outbound route.",
         )
 
+    authorization = await telegram_service.get_authorization_status()
+
     return SystemStatus(
         generated_at=datetime.now(UTC),
         app=ComponentStatus(
@@ -89,5 +97,24 @@ async def build_system_status(
         ),
         vpn=vpn,
         telegram_network=telegram_network,
-        telegram_auth=await telegram_service.get_authorization_status(),
+        telegram_auth=_authorization_component(authorization),
+    )
+
+
+def _authorization_component(
+    authorization: TelegramAuthorizationStatus,
+) -> ComponentStatus:
+    state_map = {
+        TelegramAuthorizationState.NOT_CONFIGURED: ComponentState.NOT_CONFIGURED,
+        TelegramAuthorizationState.WAIT_PHONE_NUMBER: ComponentState.WAITING,
+        TelegramAuthorizationState.WAIT_CODE: ComponentState.WAITING,
+        TelegramAuthorizationState.WAIT_PASSWORD: ComponentState.WAITING,
+        TelegramAuthorizationState.READY: ComponentState.OK,
+        TelegramAuthorizationState.ERROR: ComponentState.DEGRADED,
+    }
+    return ComponentStatus(
+        state=state_map[authorization.state],
+        label="Telegram account",
+        detail=authorization.detail,
+        next_action=authorization.next_action,
     )
