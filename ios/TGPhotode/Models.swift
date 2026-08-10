@@ -1,0 +1,144 @@
+import Foundation
+
+struct AccountProfile: Codable, Equatable, Sendable {
+    let id: Int64
+    let displayName: String
+    let username: String?
+    let profilePhotoURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case displayName = "display_name"
+        case username
+        case profilePhotoURL = "profile_photo_url"
+    }
+}
+
+struct ChatSummary: Codable, Identifiable, Hashable, Sendable {
+    let id: Int64
+    let title: String
+    let type: String
+    let unreadCount: Int
+    let lastMessage: String?
+    let lastMessageID: Int64
+    let lastMessageIsOutgoing: Bool
+    let peerUserID: Int64?
+    let isSavedMessages: Bool
+    let profilePhotoURL: String?
+    let lastReadOutboxMessageID: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, type
+        case unreadCount = "unread_count"
+        case lastMessage = "last_message"
+        case lastMessageID = "last_message_id"
+        case lastMessageIsOutgoing = "last_message_is_outgoing"
+        case peerUserID = "peer_user_id"
+        case isSavedMessages = "is_saved_messages"
+        case profilePhotoURL = "profile_photo_url"
+        case lastReadOutboxMessageID = "last_read_outbox_message_id"
+    }
+}
+
+struct TelegramMessage: Codable, Identifiable, Equatable, Sendable {
+    let id: Int64
+    let chatID: Int64
+    let isOutgoing: Bool
+    let sentAt: String
+    let kind: String
+    let text: String
+    var isRead: Bool
+    var sendingState: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, text
+        case chatID = "chat_id"
+        case isOutgoing = "is_outgoing"
+        case sentAt = "sent_at"
+        case isRead = "is_read"
+        case sendingState = "sending_state"
+    }
+}
+
+struct TelegramEvent: Codable, Sendable {
+    let type: String
+    let chatID: Int64?
+    let message: TelegramMessage?
+    let oldMessageID: Int64?
+    let presence: TelegramUserPresence?
+    let action: TelegramChatActionState?
+    let receipt: TelegramReadReceipt?
+
+    enum CodingKeys: String, CodingKey {
+        case type, message, presence, action, receipt
+        case chatID = "chat_id"
+        case oldMessageID = "old_message_id"
+    }
+}
+
+struct TelegramUserPresence: Codable, Sendable {
+    let userID: Int64
+    let state: String
+    let lastSeenAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case userID = "user_id"
+        case lastSeenAt = "last_seen_at"
+    }
+}
+
+struct TelegramUserProfile: Codable, Sendable {
+    let id: Int64
+    let displayName: String
+    let username: String?
+    let presence: TelegramUserPresence
+
+    enum CodingKeys: String, CodingKey {
+        case id, username, presence
+        case displayName = "display_name"
+    }
+}
+
+struct TelegramChatActionState: Codable, Sendable {
+    let chatID: Int64
+    let action: String
+
+    enum CodingKeys: String, CodingKey {
+        case action
+        case chatID = "chat_id"
+    }
+}
+
+struct TelegramReadReceipt: Codable, Sendable {
+    let chatID: Int64
+    let direction: String
+    let lastReadMessageID: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case direction
+        case chatID = "chat_id"
+        case lastReadMessageID = "last_read_message_id"
+    }
+}
+
+struct APIErrorDetail: Codable, Sendable {
+    let code: String
+    let message: String
+}
+
+struct APIErrorEnvelope: Codable, Sendable {
+    let detail: APIErrorDetail
+}
+
+struct SendMessageRequest: Codable, Sendable {
+    let text: String
+}
+
+struct ReadMessagesRequest: Codable, Sendable {
+    let messageIDs: [Int64]
+
+    enum CodingKeys: String, CodingKey {
+        case messageIDs = "message_ids"
+    }
+}

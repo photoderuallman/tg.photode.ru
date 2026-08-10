@@ -11,3 +11,9 @@ htmlcov/
 storage/
 secrets/
 deploy/secrets/
+ios/DeviceSecrets.xcconfig
+xcuserdata/
+*.xcuserstate
+
+# Generated export/build artifacts.
+output/

@@ -1,4 +1,8 @@
-from backend.telegram.base import TelegramAuthorizationError, TelegramService
+from backend.telegram.base import (
+    TelegramAuthorizationError,
+    TelegramService,
+    TelegramServiceError,
+)
 from backend.telegram.mock import MockTelegramService
 from backend.telegram.tdlib import TDLibTelegramService
 
@@ -7,4 +11,5 @@ __all__ = [
     "TDLibTelegramService",
     "TelegramAuthorizationError",
     "TelegramService",
+    "TelegramServiceError",
 ]

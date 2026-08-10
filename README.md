@@ -12,6 +12,10 @@ This foundation provides:
 - a `TelegramService` protocol with both mock and native TDLib implementations
 - persistent encrypted TDLib session storage outside the repository
 - a real phone → code → optional 2FA authorization flow through the private UI
+- a terminal client for listing chats, reading history, sending text, and watching new text
+- normalized presence, typing/recording actions, and read-receipt events
+- photo, video, voice-note, and video-note upload/download APIs
+- Unicode and Telegram custom-emoji text-entity support
 
 VPN credentials are Linux infrastructure secrets. They must never be stored in this repository or mixed into application configuration.
 
@@ -74,6 +78,47 @@ Run tests:
 .venv/bin/python -m pytest
 ```
 
+## REG.RU shared-host deployment
+
+Extract the generated deployment archive directly into `www/photode.ru/tg`.
+The root `.htaccess` declares `main.html` as the directory index, while the
+`api/` directory contains the same-origin PHP relay used under restricted
+mobile-network conditions.
+
+The exact VPS-first upload order for the latest mobile UX build is in
+[`docs/deploy-ux-pass-20260809.md`](docs/deploy-ux-pass-20260809.md).
+
+## Native single-account iPhone build
+
+The Xcode project in `ios/TGPhotode.xcodeproj` opens the VPS's already-authorized
+Telegram account without a phone/code login screen. It talks only to
+`https://photode.ru/tg/api/index.php`; a revocable private-device bearer is compiled from
+the ignored `ios/DeviceSecrets.xcconfig`, while TDLib and VPN access remain on the VPS.
+
+Installation and credential-rotation instructions are in
+[`docs/iphone-single-device.md`](docs/iphone-single-device.md).
+
+## Terminal messaging test
+
+The running FastAPI service is the only process that owns the TDLib session. The CLI
+talks to that private API; do not start a second TDLib process against the same database.
+
+Run these commands on the VPS from `/opt/tg-photode`:
+
+```bash
+.venv/bin/python -m backend.cli me
+.venv/bin/python -m backend.cli chats --limit 20
+.venv/bin/python -m backend.cli messages CHAT_ID --limit 30
+.venv/bin/python -m backend.cli watch
+.venv/bin/python -m backend.cli send CHAT_ID "hello from the terminal"
+.venv/bin/python -m backend.cli chat CHAT_ID
+```
+
+Use `Ctrl-C` to stop `watch`. The `send` command sends a real Telegram message; the
+`chat` command loads recent history, listens only to the selected chat, and sends every
+non-command line you type. Enter `/quit` to close it. From the Mac, keep the existing
+SSH tunnel open and add `--url http://127.0.0.1:18080` before the command name.
+
 ## Endpoints
 
 - `GET /api/health` — process liveness
@@ -82,8 +127,20 @@ Run tests:
 - `POST /api/telegram/auth/phone` — submit an international phone number
 - `POST /api/telegram/auth/code` — submit the current authorization code
 - `POST /api/telegram/auth/password` — submit the optional two-step verification password
+- `GET /api/telegram/me` — normalized authorized account identity
+- `GET /api/chats` — main chat summaries
+- `GET /api/chats/{chat_id}/messages` — recent text-message history
+- `POST /api/chats/{chat_id}/messages` — send one plain-text message
+- `POST /api/chats/{chat_id}/media` — send a photo, video, voice note, or video note
+- `POST /api/chats/{chat_id}/read` — mark visible incoming messages as read
+- `POST /api/chats/{chat_id}/messages/{message_id}/open` — mark media opened/listened/viewed
+- `POST /api/chats/{chat_id}/actions` — publish typing, recording, upload, or cancel state
+- `GET /api/users/{user_id}` — user identity and current presence
+- `GET /api/files/{file_id}` — download a TDLib-managed media file
+- `GET /api/emojis/custom/{custom_emoji_id}` — resolve a custom emoji asset
+- `GET /api/events?chat_id=...` — optionally chat-filtered server-sent event stream
+- `GET /api/events/next?chat_id=...` — ordinary HTTPS long-poll fallback for restricted networks
+- `WS /api/events?chat_id=...` — optionally chat-filtered WebSocket event stream
 
-## Next controlled step
-
-After the private UI reaches `ready`, add chat-list and message methods to the existing
-`TelegramService` boundary. Keep raw TDLib objects and commands out of browser routes.
+The frontend integration contract and payload examples are in
+[`docs/frontend-api.md`](docs/frontend-api.md).

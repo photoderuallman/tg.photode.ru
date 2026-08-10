@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#0a0a0a">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' blob: data:; media-src 'self' blob:; script-src 'self'; style-src 'self'">
+    <title>Lucius P. — Telegram</title>
+    <link rel="stylesheet" href="./static/css/app.css?v=20260809-6">
+    <script src="./static/js/app.js?v=20260809-4" defer></script>
+  </head>
+  <body>
+    <section class="unlock-screen" id="unlock-screen" aria-label="Private access" hidden>
+      <form class="unlock-form" id="unlock-form">
+        <label for="access-key">Private access</label>
+        <input id="access-key" name="access-key" type="password" autocomplete="current-password" spellcheck="false">
+        <button type="submit">Open</button>
+        <output id="access-error" aria-live="polite"></output>
+      </form>
+    </section>
+
+    <main class="mobile-app" id="app" data-screen="main" hidden>
+      <section class="screen main-screen is-active" id="main-screen" aria-label="Chats">
+        <header class="screen-header main-header">
+          <span class="profile-bowl" aria-hidden="true"></span>
+          <span class="header-name">Lucius P.</span>
+          <span class="header-status" id="connection-status">RDY</span>
+        </header>
+
+        <nav class="chat-list" id="chat-list" aria-label="Telegram chats"></nav>
+      </section>
+
+      <section class="screen chat-screen" id="chat-screen" aria-label="Conversation" hidden>
+        <button class="screen-header chat-header" id="chat-back" type="button" aria-label="Back to chats">
+          <span class="contact-bowl" id="chat-bowl" aria-hidden="true"></span>
+          <span class="header-name" id="chat-name">Андрей Петров</span>
+          <span class="header-status" id="contact-status">ONL</span>
+        </button>
+
+        <div class="message-scroller" id="message-scroller" tabindex="0" aria-label="Messages">
+          <div class="message-thread" id="message-thread"></div>
+        </div>
+
+        <form class="composer" id="composer" aria-label="Message composer">
+          <button class="composer-control media-control" id="media-control" type="button" aria-label="Choose photo or video">M.</button>
+          <textarea id="message-input" rows="1" maxlength="4096" enterkeyhint="enter" aria-label="Message" placeholder="Message"></textarea>
+          <button class="composer-control action-control" id="action-control" type="button" aria-label="Hold to record a video message">O.</button>
+          <input id="media-input" type="file" accept="image/*,video/*" hidden>
+        </form>
+
+        <section class="recording-layer" id="recording-layer" aria-label="Recording video message" hidden>
+          <div class="recording-circle">
+            <video id="recording-preview" autoplay muted playsinline></video>
+            <canvas id="recording-canvas" width="480" height="480" hidden></canvas>
+          </div>
+
+          <button class="recording-switch" id="recording-switch" type="button">Switch</button>
+
+          <div class="recording-controls">
+            <span class="recording-bowl" aria-hidden="true"></span>
+            <output class="recording-timer" id="recording-timer">0.00</output>
+            <button id="recording-cancel" type="button">Cancel</button>
+            <button id="recording-send" type="button" aria-label="Send video message">O.</button>
+          </div>
+        </section>
+      </section>
+
+      <div class="review-grid" aria-hidden="true"></div>
+    </main>
+  </body>
+</html>

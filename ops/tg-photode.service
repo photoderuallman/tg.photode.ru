@@ -11,9 +11,10 @@ WorkingDirectory=/opt/tg-photode
 EnvironmentFile=/etc/tg-photode/tg-photode.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/tg-photode/.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+ExecStart=/opt/tg-photode/.venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --timeout-graceful-shutdown 10
 Restart=on-failure
 RestartSec=3
+TimeoutStopSec=25
 
 NoNewPrivileges=true
 PrivateTmp=true
