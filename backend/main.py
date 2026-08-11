@@ -59,6 +59,7 @@ from backend.models import (
     TelegramTextMessage,
     TelegramTextMessageRequest,
     TelegramUserProfile,
+    TransportCheckResponse,
     WebSessionRequest,
     WebSessionResponse,
 )
@@ -319,6 +320,32 @@ async def status(request: Request) -> SystemStatus:
     )
 
 
+@app.post(
+    "/api/transport/check",
+    response_model=TransportCheckResponse,
+    status_code=202,
+)
+async def trigger_transport_check(request: Request) -> TransportCheckResponse:
+    """Ask the root-owned failover unit for an immediate deep route check."""
+
+    settings: Settings = request.app.state.settings
+    if not settings.vpn_check_trigger_path:
+        return TransportCheckResponse(accepted=False)
+
+    trigger_path = Path(settings.vpn_check_trigger_path)
+    try:
+        trigger_path.touch(exist_ok=True)
+    except OSError:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "transport_check_unavailable",
+                "message": "The immediate transport check could not be queued.",
+            },
+        ) from None
+    return TransportCheckResponse(accepted=True)
+
+
 @app.get(
     "/api/telegram/auth",
     response_model=TelegramAuthorizationStatus,
@@ -425,7 +452,12 @@ async def telegram_send_message(
 ) -> TelegramTextMessage:
     service = _telegram_service(request)
     return await _telegram_action(
-        service.send_text_message(chat_id, payload.text, payload.entities)
+        service.send_text_message(
+            chat_id,
+            payload.text,
+            payload.entities,
+            payload.client_request_id,
+        )
     )
 
 
@@ -493,6 +525,10 @@ async def telegram_send_media(
         Literal["photo", "video", "voice_note", "video_note"],
         Form(),
     ],
+    client_request_id: Annotated[
+        str | None,
+        Form(min_length=16, max_length=64),
+    ] = None,
     caption: Annotated[str, Form(max_length=1024)] = "",
     duration: Annotated[int, Form(ge=0, le=86400)] = 0,
     width: Annotated[int, Form(ge=0, le=8192)] = 0,
@@ -523,6 +559,7 @@ async def telegram_send_media(
                 chat_id,
                 kind=kind,
                 path=prepared.path,
+                client_request_id=client_request_id,
                 caption=caption,
                 duration=duration,
                 width=prepared.width,
@@ -639,6 +676,8 @@ async def telegram_events(
 async def telegram_next_event(
     request: Request,
     chat_id: int | None = Query(default=None),
+    active_chat_id: int | None = Query(default=None),
+    after_event_id: int | None = Query(default=None, ge=0),
     timeout_seconds: int = Query(default=20, ge=1, le=25),
 ) -> TelegramEvent | Response:
     """Return one Telegram event using an ordinary HTTPS long-poll request."""
@@ -653,10 +692,15 @@ async def telegram_next_event(
                 "message": "Telegram must be authorized before receiving events.",
             },
         )
-    if chat_id is not None:
-        await _telegram_action(service.open_chat(chat_id))
+    opened_chat_id = active_chat_id if active_chat_id is not None else chat_id
+    if opened_chat_id is not None:
+        await _telegram_action(service.open_chat(opened_chat_id))
 
-    events = service.event_stream()
+    events = (
+        service.event_stream(after_event_id=after_event_id)
+        if after_event_id is not None
+        else service.event_stream()
+    )
     deadline = monotonic() + timeout_seconds
     try:
         while True:
@@ -676,9 +720,9 @@ async def telegram_next_event(
         ) from None
     finally:
         await events.aclose()
-        if chat_id is not None:
+        if opened_chat_id is not None:
             with suppress(TelegramServiceError):
-                await service.close_chat(chat_id)
+                await service.close_chat(opened_chat_id)
 
 
 @app.websocket("/api/events")

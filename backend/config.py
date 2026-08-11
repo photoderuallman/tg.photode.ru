@@ -25,6 +25,7 @@ class Settings:
     app_version: str = "0.1.0"
     environment: str = "development"
     vpn_interface: str = "tg-vpn"
+    vpn_check_trigger_path: str = ""
     telegram_probe_host: str = ""
     telegram_probe_port: int = 443
     telegram_auth_mode: str = "disabled"
@@ -159,6 +160,10 @@ class Settings:
         return cls(
             environment=os.getenv("APP_ENV", "development"),
             vpn_interface=os.getenv("VPN_INTERFACE", "tg-vpn"),
+            vpn_check_trigger_path=os.getenv(
+                "VPN_CHECK_TRIGGER_PATH",
+                "",
+            ).strip(),
             telegram_probe_host=os.getenv("TELEGRAM_PROBE_HOST", "").strip(),
             telegram_probe_port=int(os.getenv("TELEGRAM_PROBE_PORT", "443")),
             telegram_auth_mode=telegram_auth_mode,

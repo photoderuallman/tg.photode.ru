@@ -18,8 +18,10 @@ struct ChatView: View {
     @State private var recordingElapsed: TimeInterval = 0
     @State private var selectedMediaItem: PhotosPickerItem?
     @State private var isFinishingVideoNote = false
+    @State private var keyboardIsVisible = false
     @State private var lastTypingSentAt = Date.distantPast
     @State private var typingCancelTask: Task<Void, Never>?
+    @State private var edgeDragOffset: CGFloat = 0
     @StateObject private var videoRecorder = VideoNoteRecorder()
     @Namespace private var videoNoteNamespace
 
@@ -64,6 +66,9 @@ struct ChatView: View {
             }
         }
         .background(Color.photodeBackground)
+        .offset(x: edgeDragOffset)
+        .contentShape(Rectangle())
+        .simultaneousGesture(edgeBackGesture)
         .animation(
             .spring(duration: 0.3, bounce: 0),
             value: isRecordingVideoNote
@@ -74,6 +79,20 @@ struct ChatView: View {
         }
         .onChange(of: model.composerText) { _, text in
             updateTypingState(for: text)
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: UIResponder.keyboardWillShowNotification
+            )
+        ) { _ in
+            keyboardIsVisible = true
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: UIResponder.keyboardWillHideNotification
+            )
+        ) { _ in
+            keyboardIsVisible = false
         }
         .onDisappear {
             typingCancelTask?.cancel()
@@ -93,11 +112,11 @@ struct ChatView: View {
                     }
                     .photodeHeaderTypography()
                     .foregroundStyle(
-                        model.contactStatusIsActive
+                        !showsContactStatus || model.contactStatusIsActive
                             ? Color.photodeActive
                             : Color.photodeDisabled
                     )
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, PhotodeMetrics.glassContentInset)
                     .frame(height: PhotodeMetrics.glassControlHeight)
                     .contentShape(Capsule())
                     .photodeGlassCapsule(interactive: true)
@@ -109,24 +128,35 @@ struct ChatView: View {
 
                 Spacer(minLength: 12)
 
-                Text(model.contactStatus)
-                    .photodeHeaderTypography()
-                    .foregroundStyle(
-                        model.contactStatusIsActive
-                            ? Color.photodeActive
-                            : Color.photodeDisabled
-                    )
-                    .contentTransition(.numericText())
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .monospacedDigit()
-                    .padding(.horizontal, 14)
-                    .frame(height: PhotodeMetrics.glassControlHeight)
-                    .photodeGlassCapsule()
-                    .accessibilityLabel("Contact status")
-                    .accessibilityValue(model.contactStatus)
+                if showsContactStatus {
+                    Text(model.contactStatus)
+                        .photodeHeaderTypography()
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(
+                            model.contactStatusIsActive
+                                ? Color.photodeActive
+                                : Color.photodeDisabled
+                        )
+                        .contentTransition(.numericText())
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .monospacedDigit()
+                        .padding(
+                            .horizontal,
+                            PhotodeMetrics.glassContentInset
+                        )
+                        .frame(height: PhotodeMetrics.glassControlHeight)
+                        .photodeGlassCapsule()
+                        .accessibilityLabel("Contact status")
+                        .accessibilityValue(model.contactStatus)
+                }
             }
         }
+    }
+
+    private var showsContactStatus: Bool {
+        guard !chat.isSavedMessages else { return false }
+        return chat.type == "private" || chat.type == "secret"
     }
 
     private func recordingPreview(in size: CGSize) -> some View {
@@ -174,48 +204,51 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(
                     alignment: .leading,
-                    spacing: PhotodeMetrics.messageGroupSpacing
+                    spacing: chat.type == "channel"
+                        ? PhotodeMetrics.channelPostSpacing
+                        : PhotodeMetrics.messageGroupSpacing
                 ) {
-                    ForEach(messageGroups) { group in
-                        HStack(alignment: .top, spacing: 0) {
-                            Text(group.label)
-                                .photodeMessageTypography()
-                                .foregroundStyle(group.labelColor)
-                                .frame(width: columnWidth, alignment: .leading)
-                                .transition(
-                                    .scale(scale: 0.25)
-                                        .combined(with: .opacity)
-                                )
+                    if chat.type == "channel" {
+                        ForEach(model.messages) { message in
+                            HStack(alignment: .top, spacing: 0) {
+                                Color.clear
+                                    .frame(width: columnWidth)
 
-                            VStack(
-                                alignment: .leading,
-                                spacing: PhotodeMetrics.messageSpacing
-                            ) {
-                                ForEach(group.messages) { message in
-                                    Text(messageText(message))
-                                        .photodeMessageTypography()
-                                        .foregroundStyle(Color.photodeActive)
-                                        .frame(
-                                            maxWidth: .infinity,
-                                            alignment: .leading
-                                        )
-                                        .id(message.id)
-                                        .transition(
-                                            .opacity.combined(
-                                                with: .move(edge: .bottom)
-                                            )
-                                        )
-                                        .onAppear {
-                                            model.loadOlderMessagesIfNeeded(
-                                                visibleMessageID: message.id
-                                            )
-                                        }
-                                }
+                                messageBody(message)
+                                    .frame(
+                                        width: columnWidth * 7,
+                                        alignment: .leading
+                                    )
                             }
-                            .frame(
-                                width: columnWidth * 7,
-                                alignment: .leading
-                            )
+                        }
+                    } else {
+                        ForEach(messageGroups) { group in
+                            HStack(alignment: .top, spacing: 0) {
+                                Text(group.label)
+                                    .photodeMessageTypography()
+                                    .foregroundStyle(group.labelColor)
+                                    .frame(
+                                        width: columnWidth,
+                                        alignment: .leading
+                                    )
+                                    .transition(
+                                        .scale(scale: 0.25)
+                                            .combined(with: .opacity)
+                                    )
+
+                                VStack(
+                                    alignment: .leading,
+                                    spacing: PhotodeMetrics.messageSpacing
+                                ) {
+                                    ForEach(group.messages) { message in
+                                        messageBody(message)
+                                    }
+                                }
+                                .frame(
+                                    width: columnWidth * 7,
+                                    alignment: .leading
+                                )
+                            }
                         }
                     }
 
@@ -261,6 +294,22 @@ struct ChatView: View {
         }
     }
 
+    private func messageBody(_ message: TelegramMessage) -> some View {
+        Text(messageText(message))
+            .photodeMessageTypography()
+            .foregroundStyle(Color.photodeActive)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .id(message.id)
+            .transition(
+                .opacity.combined(with: .move(edge: .bottom))
+            )
+            .onAppear {
+                model.loadOlderMessagesIfNeeded(
+                    visibleMessageID: message.id
+                )
+            }
+    }
+
     private var composer: some View {
         let mediaIsDisabled = model.isSendingMedia
 
@@ -294,11 +343,18 @@ struct ChatView: View {
                 .foregroundStyle(Color.photodeActive)
                 .tint(Color.photodeActive)
                 .textFieldStyle(.plain)
-                .padding(.horizontal, 14)
+                .padding(
+                    .horizontal,
+                    PhotodeMetrics.glassContentInset
+                )
                 .padding(.vertical, 9)
                 .frame(minHeight: PhotodeMetrics.glassControlHeight)
                 .fixedSize(horizontal: false, vertical: true)
                 .photodeGlassCapsule(interactive: true)
+                .frame(
+                    minHeight: PhotodeMetrics.minimumHitArea,
+                    alignment: .center
+                )
                 .accessibilityLabel("Message")
 
                 Button(action: composerAction) {
@@ -318,6 +374,7 @@ struct ChatView: View {
                         }
                     }
                     .photodeHeaderTypography()
+                    .multilineTextAlignment(.center)
                     .foregroundStyle(
                         model.composerText.isEmpty
                             ? Color.photodeDisabled
@@ -325,7 +382,8 @@ struct ChatView: View {
                     )
                     .frame(
                         width: PhotodeMetrics.glassControlHeight,
-                        height: PhotodeMetrics.glassControlHeight
+                        height: PhotodeMetrics.glassControlHeight,
+                        alignment: .center
                     )
                     .contentShape(Circle())
                     .matchedGeometryEffect(
@@ -338,7 +396,8 @@ struct ChatView: View {
                 .buttonStyle(PhotodePressButtonStyle())
                 .frame(
                     width: PhotodeMetrics.minimumHitArea,
-                    height: PhotodeMetrics.minimumHitArea
+                    height: PhotodeMetrics.minimumHitArea,
+                    alignment: .center
                 )
                 .accessibilityLabel(
                     model.composerText.isEmpty
@@ -353,7 +412,11 @@ struct ChatView: View {
         }
         .padding(.horizontal, PhotodeMetrics.screenInset)
         .padding(.top, 8)
-        .padding(.bottom, 0)
+        .padding(.bottom, keyboardIsVisible ? 16 : 0)
+        .animation(
+            .easeInOut(duration: 0.3),
+            value: keyboardIsVisible
+        )
     }
 
     private var recordingToolbar: some View {
@@ -368,14 +431,17 @@ struct ChatView: View {
                         .monospacedDigit()
                 }
                 .photodeHeaderTypography()
-                .padding(.horizontal, 14)
+                .padding(.horizontal, PhotodeMetrics.glassContentInset)
                 .frame(height: PhotodeMetrics.glassControlHeight)
                 .photodeGlassCapsule()
 
                 Button("Cancel", action: cancelVideoNoteRecording)
                     .photodeHeaderTypography()
                     .foregroundStyle(Color.photodeActive)
-                    .padding(.horizontal, 16)
+                    .padding(
+                        .horizontal,
+                        PhotodeMetrics.glassContentInset
+                    )
                     .frame(height: PhotodeMetrics.glassControlHeight)
                     .contentShape(Capsule())
                     .photodeGlassCapsule(interactive: true)
@@ -593,6 +659,35 @@ struct ChatView: View {
                 model.closeChat()
             }
         }
+    }
+
+    private var edgeBackGesture: some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .local)
+            .onChanged { value in
+                guard !isClosing,
+                      value.startLocation.x <= 28,
+                      value.translation.width > 0,
+                      abs(value.translation.width) > abs(value.translation.height)
+                else { return }
+                edgeDragOffset = min(value.translation.width, 180)
+            }
+            .onEnded { value in
+                guard edgeDragOffset > 0 else { return }
+                let shouldClose = edgeDragOffset >= 72
+                    || value.predictedEndTranslation.width >= 140
+                if shouldClose {
+                    isClosing = true
+                    composerFocused = false
+                    withAnimation(.easeOut(duration: 0.22)) {
+                        edgeDragOffset = 0
+                        model.closeChat()
+                    }
+                } else {
+                    withAnimation(.spring(duration: 0.25, bounce: 0)) {
+                        edgeDragOffset = 0
+                    }
+                }
+            }
     }
 
     private func scrollToBottom(

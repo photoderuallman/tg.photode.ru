@@ -81,21 +81,34 @@ actor APIClient {
         try await request(path: "/api/users/\(userID)")
     }
 
-    func sendMessage(chatID: Int64, text: String) async throws -> TelegramMessage {
+    func sendMessage(
+        chatID: Int64,
+        text: String,
+        clientRequestID: String
+    ) async throws -> TelegramMessage {
         try await request(
             path: "/api/chats/\(chatID)/messages",
             method: "POST",
-            body: SendMessageRequest(text: text)
+            body: SendMessageRequest(
+                text: text,
+                clientRequestID: clientRequestID
+            )
         )
     }
 
     func sendMedia(
         chatID: Int64,
-        upload: TelegramMediaUpload
+        upload: TelegramMediaUpload,
+        clientRequestID: String
     ) async throws -> TelegramMessage {
         let boundary = "TGPhotode-\(UUID().uuidString)"
         var body = Data()
 
+        body.appendMultipartField(
+            named: "client_request_id",
+            value: clientRequestID,
+            boundary: boundary
+        )
         body.appendMultipartField(
             named: "kind",
             value: upload.kind.rawValue,
@@ -156,10 +169,26 @@ actor APIClient {
         )
     }
 
-    func nextEvent(chatID: Int64?) async throws -> TelegramEvent? {
-        var query = [URLQueryItem(name: "timeout_seconds", value: "20")]
-        if let chatID {
-            query.append(URLQueryItem(name: "chat_id", value: String(chatID)))
+    func nextEvent(
+        activeChatID: Int64?,
+        afterEventID: Int64?
+    ) async throws -> TelegramEvent? {
+        var query = [URLQueryItem(name: "timeout_seconds", value: "8")]
+        if let activeChatID {
+            query.append(
+                URLQueryItem(
+                    name: "active_chat_id",
+                    value: String(activeChatID)
+                )
+            )
+        }
+        if let afterEventID {
+            query.append(
+                URLQueryItem(
+                    name: "after_event_id",
+                    value: String(afterEventID)
+                )
+            )
         }
         let (data, response) = try await responseData(
             path: "/api/events/next",
@@ -168,6 +197,14 @@ actor APIClient {
         )
         if response.statusCode == 204 { return nil }
         return try decoder.decode(TelegramEvent.self, from: data)
+    }
+
+    func triggerTransportCheck() async throws {
+        let _: TransportCheckResponse = try await request(
+            path: "/api/transport/check",
+            method: "POST",
+            body: EmptyTransportCheckRequest()
+        )
     }
 
     private func request<Response: Decodable & Sendable>(
@@ -289,6 +326,10 @@ private extension Data {
 }
 
 struct EmptyReadResponse: Codable, Sendable {}
+struct EmptyTransportCheckRequest: Codable, Sendable {}
+struct TransportCheckResponse: Codable, Sendable {
+    let accepted: Bool
+}
 
 enum APIClientError: LocalizedError, Sendable {
     case blockedOrigin

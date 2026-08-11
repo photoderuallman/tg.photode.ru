@@ -70,6 +70,7 @@ class TelegramService(Protocol):
         chat_id: int,
         text: str,
         entities: list[TelegramTextEntity] | None = None,
+        client_request_id: str | None = None,
     ) -> TelegramTextMessage:
         """Send one plain-text message to a Telegram chat."""
 
@@ -101,6 +102,7 @@ class TelegramService(Protocol):
         *,
         kind: str,
         path: Path,
+        client_request_id: str | None = None,
         caption: str = "",
         duration: int = 0,
         width: int = 0,
@@ -120,5 +122,8 @@ class TelegramService(Protocol):
     async def close_chat(self, chat_id: int) -> None:
         """Release one active display reference for a chat."""
 
-    def event_stream(self) -> AsyncIterator[TelegramEvent]:
+    def event_stream(
+        self,
+        after_event_id: int | None = None,
+    ) -> AsyncIterator[TelegramEvent]:
         """Subscribe to normalized realtime Telegram events."""

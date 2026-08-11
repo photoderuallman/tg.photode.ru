@@ -50,6 +50,31 @@ struct TelegramMessage: Codable, Identifiable, Equatable, Sendable {
     var media: TelegramMedia? = nil
     var isRead: Bool
     var sendingState: String
+    let clientRequestID: String?
+
+    init(
+        id: Int64,
+        chatID: Int64,
+        isOutgoing: Bool,
+        sentAt: String,
+        kind: String,
+        text: String,
+        media: TelegramMedia? = nil,
+        isRead: Bool,
+        sendingState: String,
+        clientRequestID: String? = nil
+    ) {
+        self.id = id
+        self.chatID = chatID
+        self.isOutgoing = isOutgoing
+        self.sentAt = sentAt
+        self.kind = kind
+        self.text = text
+        self.media = media
+        self.isRead = isRead
+        self.sendingState = sendingState
+        self.clientRequestID = clientRequestID
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, kind, text, media
@@ -58,6 +83,7 @@ struct TelegramMessage: Codable, Identifiable, Equatable, Sendable {
         case sentAt = "sent_at"
         case isRead = "is_read"
         case sendingState = "sending_state"
+        case clientRequestID = "client_request_id"
     }
 }
 
@@ -103,6 +129,7 @@ struct TelegramMediaUpload: Sendable {
 }
 
 struct TelegramEvent: Codable, Sendable {
+    let eventID: Int64?
     let type: String
     let chatID: Int64?
     let message: TelegramMessage?
@@ -113,6 +140,7 @@ struct TelegramEvent: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case type, message, presence, action, receipt
+        case eventID = "event_id"
         case chatID = "chat_id"
         case oldMessageID = "old_message_id"
     }
@@ -144,11 +172,13 @@ struct TelegramUserProfile: Codable, Sendable {
 
 struct TelegramChatActionState: Codable, Sendable {
     let chatID: Int64
+    let senderID: Int64?
     let action: String
 
     enum CodingKeys: String, CodingKey {
         case action
         case chatID = "chat_id"
+        case senderID = "sender_id"
     }
 }
 
@@ -175,6 +205,12 @@ struct APIErrorEnvelope: Codable, Sendable {
 
 struct SendMessageRequest: Codable, Sendable {
     let text: String
+    let clientRequestID: String
+
+    enum CodingKeys: String, CodingKey {
+        case text
+        case clientRequestID = "client_request_id"
+    }
 }
 
 struct ReadMessagesRequest: Codable, Sendable {

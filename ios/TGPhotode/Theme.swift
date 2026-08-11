@@ -40,8 +40,10 @@ enum PhotodeMetrics {
     static let glassControlHeight: CGFloat = 38
     static let minimumHitArea: CGFloat = 44
     static let glassSpacing: CGFloat = 12
+    static let glassContentInset: CGFloat = 12
     static let messageGroupSpacing: CGFloat = 16
     static let messageSpacing: CGFloat = 8
+    static let channelPostSpacing: CGFloat = 20
 }
 
 extension View {

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from ctypes import CDLL, c_char_p, c_double, c_int
@@ -157,6 +158,9 @@ class TDLibTelegramService:
         self._closing = False
         self._stopping = False
         self._event_queues: set[asyncio.Queue[TelegramEvent]] = set()
+        self._event_history: deque[TelegramEvent] = deque(maxlen=256)
+        self._event_ids = count(1)
+        self._client_request_by_message_id: dict[int, str] = {}
         self._last_read_inbox_by_chat: dict[int, int] = {}
         self._last_read_outbox_by_chat: dict[int, int] = {}
         self._private_chat_by_user: dict[int, int] = {}
@@ -352,6 +356,7 @@ class TDLibTelegramService:
         chat_id: int,
         text: str,
         entities: list[TelegramTextEntity] | None = None,
+        client_request_id: str | None = None,
     ) -> TelegramTextMessage:
         self._require_ready()
         if not text.strip() or len(text) > 4096:
@@ -370,7 +375,10 @@ class TDLibTelegramService:
             },
             action="text-message send",
         )
-        return self._message(message)
+        message_id = int(message.get("id", 0))
+        if client_request_id and message_id:
+            self._client_request_by_message_id[message_id] = client_request_id
+        return self._message(message, client_request_id=client_request_id)
 
     async def get_user(self, user_id: int) -> TelegramUserProfile:
         self._require_ready()
@@ -476,6 +484,7 @@ class TDLibTelegramService:
         *,
         kind: str,
         path: Path,
+        client_request_id: str | None = None,
         caption: str = "",
         duration: int = 0,
         width: int = 0,
@@ -551,7 +560,10 @@ class TDLibTelegramService:
             content,
             action=f"{kind} send",
         )
-        return self._message(message)
+        message_id = int(message.get("id", 0))
+        if client_request_id and message_id:
+            self._client_request_by_message_id[message_id] = client_request_id
+        return self._message(message, client_request_id=client_request_id)
 
     async def download_file(self, file_id: int) -> Path:
         self._require_ready()
@@ -641,11 +653,25 @@ class TDLibTelegramService:
             else:
                 self._open_chat_counts[chat_id] = count - 1
 
-    async def event_stream(self) -> AsyncIterator[TelegramEvent]:
+    async def event_stream(
+        self,
+        after_event_id: int | None = None,
+    ) -> AsyncIterator[TelegramEvent]:
         self._require_ready()
         queue: asyncio.Queue[TelegramEvent] = asyncio.Queue(maxsize=100)
         self._event_queues.add(queue)
+        backlog = (
+            [
+                event
+                for event in self._event_history
+                if event.event_id is not None and event.event_id > after_event_id
+            ]
+            if after_event_id is not None
+            else []
+        )
         try:
+            for event in backlog:
+                yield event
             while True:
                 yield await queue.get()
         finally:
@@ -679,7 +705,12 @@ class TDLibTelegramService:
         if event_type == "updateAuthorizationState":
             self._apply_authorization_state(event.get("authorization_state", {}))
         elif event_type == "updateNewMessage":
-            message = self._message(event.get("message", {}))
+            raw_message = event.get("message", {})
+            message_id = int(raw_message.get("id", 0))
+            message = self._message(
+                raw_message,
+                client_request_id=self._client_request_by_message_id.get(message_id),
+            )
             self._publish(
                 TelegramEvent(
                     type="message.new",
@@ -688,23 +719,44 @@ class TDLibTelegramService:
                 )
             )
         elif event_type == "updateMessageSendSucceeded":
-            message = self._message(event.get("message", {}))
+            raw_message = event.get("message", {})
+            old_message_id = int(event.get("old_message_id", 0))
+            client_request_id = self._client_request_by_message_id.pop(
+                old_message_id,
+                None,
+            )
+            new_message_id = int(raw_message.get("id", 0))
+            if client_request_id and new_message_id:
+                self._client_request_by_message_id[new_message_id] = client_request_id
+            message = self._message(
+                raw_message,
+                client_request_id=client_request_id,
+            )
             self._publish(
                 TelegramEvent(
                     type="message.sent",
                     chat_id=message.chat_id,
                     message=message,
-                    old_message_id=int(event.get("old_message_id", 0)) or None,
+                    old_message_id=old_message_id or None,
                 )
             )
         elif event_type == "updateMessageSendFailed":
-            message = self._message(event.get("message", {}))
+            raw_message = event.get("message", {})
+            old_message_id = int(event.get("old_message_id", 0))
+            client_request_id = self._client_request_by_message_id.pop(
+                old_message_id,
+                None,
+            )
+            message = self._message(
+                raw_message,
+                client_request_id=client_request_id,
+            )
             self._publish(
                 TelegramEvent(
                     type="message.failed",
                     chat_id=message.chat_id,
                     message=message,
-                    old_message_id=int(event.get("old_message_id", 0)) or None,
+                    old_message_id=old_message_id or None,
                 )
             )
         elif event_type == "updateUserStatus":
@@ -1125,6 +1177,11 @@ class TDLibTelegramService:
         photo_file_id, photo_url = self._profile_photo_reference(
             chat.get("photo") or {}
         )
+        normalized_chat_type = self._snake_name(
+            chat_type.removeprefix("chatType")
+        )
+        if chat_type == "chatTypeSupergroup" and raw_chat_type.get("is_channel"):
+            normalized_chat_type = "channel"
         return TelegramChatSummary(
             id=int(chat["id"]),
             title=(
@@ -1132,7 +1189,7 @@ class TDLibTelegramService:
                 if is_saved_messages
                 else str(chat.get("title") or "Untitled chat")
             ),
-            type=self._snake_name(chat_type.removeprefix("chatType")),
+            type=normalized_chat_type,
             unread_count=int(chat.get("unread_count", 0)),
             last_message=self._message_preview(last_message),
             last_message_id=int(last_message.get("id", 0)),
@@ -1159,7 +1216,12 @@ class TDLibTelegramService:
             return None, None
         return file_id, f"/api/files/{file_id}"
 
-    def _message(self, message: dict[str, Any]) -> TelegramMessage:
+    def _message(
+        self,
+        message: dict[str, Any],
+        *,
+        client_request_id: str | None = None,
+    ) -> TelegramMessage:
         chat_id = int(message["chat_id"])
         message_id = int(message["id"])
         is_outgoing = bool(message.get("is_outgoing", False))
@@ -1194,6 +1256,7 @@ class TDLibTelegramService:
             media=media,
             is_read=bool(read_marker and message_id <= read_marker),
             sending_state=sending_state,
+            client_request_id=client_request_id,
         )
 
     @classmethod
@@ -1509,6 +1572,8 @@ class TDLibTelegramService:
         return re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
 
     def _publish(self, event: TelegramEvent) -> None:
+        event = event.model_copy(update={"event_id": next(self._event_ids)})
+        self._event_history.append(event)
         for queue in tuple(self._event_queues):
             if queue.full():
                 queue.get_nowait()

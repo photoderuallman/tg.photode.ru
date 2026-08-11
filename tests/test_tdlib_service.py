@@ -474,6 +474,43 @@ def test_tdlib_service_hardcodes_self_chat_as_saved_messages(tmp_path: Any) -> N
     assert summary.is_saved_messages is True
 
 
+def test_tdlib_service_distinguishes_channels_from_groups(tmp_path: Any) -> None:
+    service = TDLibTelegramService(
+        api_id=12345,
+        api_hash="0123456789abcdef0123456789abcdef",
+        database_directory=str(tmp_path / "database"),
+        files_directory=str(tmp_path / "files"),
+        database_encryption_key="ZmFrZS1lbmNyeXB0aW9uLWtleQ==",
+        native_client=FakeTDJsonClient(),
+    )
+
+    channel = service._chat_summary(
+        {
+            "id": 100,
+            "title": "Announcements",
+            "type": {
+                "@type": "chatTypeSupergroup",
+                "supergroup_id": 10,
+                "is_channel": True,
+            },
+        }
+    )
+    group = service._chat_summary(
+        {
+            "id": 101,
+            "title": "Team",
+            "type": {
+                "@type": "chatTypeSupergroup",
+                "supergroup_id": 11,
+                "is_channel": False,
+            },
+        }
+    )
+
+    assert channel.type == "channel"
+    assert group.type == "supergroup"
+
+
 async def _run_extended_capabilities(tmp_path: Any) -> dict[str, Any]:
     fake = FakeTDJsonClient()
     downloaded = tmp_path / "files" / "downloaded-photo.jpg"

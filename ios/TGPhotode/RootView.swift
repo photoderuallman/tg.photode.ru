@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
@@ -22,6 +23,11 @@ struct RootView: View {
         }
         .animation(.easeInOut(duration: 0.3), value: model.selectedChat?.id)
         .task { await model.bootstrap() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                model.appDidBecomeActive()
+            }
+        }
         .alert(
             "TG PHOTODE",
             isPresented: Binding(
@@ -29,7 +35,10 @@ struct RootView: View {
                 set: { if !$0 { model.errorMessage = nil } }
             )
         ) {
-            Button("OK", role: .cancel) { model.errorMessage = nil }
+            Button("Retry") {
+                model.errorMessage = nil
+                Task { await model.connectDevice() }
+            }
         } message: {
             Text(model.errorMessage ?? "")
         }

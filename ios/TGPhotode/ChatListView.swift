@@ -12,8 +12,20 @@ struct ChatListView: View {
             VStack(spacing: 0) {
                 mainHeader(rowHeight: rowHeight, columnWidth: columnWidth)
 
-                ForEach(Array(model.chats.prefix(11).enumerated()), id: \.element.id) { _, chat in
-                    chatRow(chat, rowHeight: rowHeight, columnWidth: columnWidth)
+                if model.connectionStatus == "RDY" {
+                    VStack(spacing: 0) {
+                        ForEach(
+                            Array(model.chats.prefix(11).enumerated()),
+                            id: \.element.id
+                        ) { _, chat in
+                            chatRow(
+                                chat,
+                                rowHeight: rowHeight,
+                                columnWidth: columnWidth
+                            )
+                        }
+                    }
+                    .transition(.opacity)
                 }
 
                 Spacer(minLength: 0)
@@ -21,6 +33,10 @@ struct ChatListView: View {
             .frame(height: contentHeight, alignment: .top)
             .padding(.horizontal, 36)
             .padding(.vertical, 36)
+            .animation(
+                .easeInOut(duration: 0.3),
+                value: model.connectionStatus
+            )
         }
         .font(.system(size: 18, weight: .medium))
         .lineSpacing(2)
@@ -41,7 +57,7 @@ struct ChatListView: View {
                 .frame(width: columnWidth * 6, alignment: .leading)
 
             Text(model.connectionStatus)
-                .foregroundStyle(model.connectionStatus == "RDY" ? Color.photodeDisabled : Color.photodeActive)
+                .foregroundStyle(Color.photodeDisabled)
                 .contentTransition(.numericText())
                 .frame(width: columnWidth, alignment: .trailing)
         }

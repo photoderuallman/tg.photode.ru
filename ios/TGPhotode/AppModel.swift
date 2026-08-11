@@ -25,11 +25,17 @@ final class AppModel: ObservableObject {
     private let cacheStore = CacheStore()
     private var cachedMessages: [Int64: [TelegramMessage]] = [:]
     private var pollingTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
     private var cacheSaveTask: Task<Void, Never>?
     private var olderHistoryTask: Task<Void, Never>?
+    private var contactActionResetTask: Task<Void, Never>?
     private var exhaustedHistoryChatIDs: Set<Int64> = []
     private var messageIDAliases: [Int64: Int64] = [:]
     private var didBootstrap = false
+    private var needsReconciliation = false
+    private var lastReconciliationAt = Date.distantPast
+    private var lastForegroundCheckAt = Date.distantPast
+    private var lastEventID: Int64?
     private var nextLocalMessageID: Int64 = -1
 
     init() {
@@ -65,8 +71,14 @@ final class AppModel: ObservableObject {
         }
 
         await api.setBearerToken(token)
+        lastForegroundCheckAt = Date()
+        Task { [api] in
+            try? await api.triggerTransportCheck()
+        }
         do {
             try await loadAuthenticatedState()
+            reconnectTask?.cancel()
+            reconnectTask = nil
         } catch {
             await handleSessionError(error)
         }
@@ -84,7 +96,7 @@ final class AppModel: ObservableObject {
             connectionStatus = "RDY"
             persistCache()
         } catch {
-            await handleSessionError(error)
+            await handleBackgroundError(error)
         }
     }
 
@@ -124,6 +136,28 @@ final class AppModel: ObservableObject {
         composerText = ""
         contactStatus = "LSR"
         contactStatusIsActive = false
+        contactActionResetTask?.cancel()
+        contactActionResetTask = nil
+        startPolling()
+    }
+
+    func appDidBecomeActive() {
+        guard didBootstrap,
+              Date().timeIntervalSince(lastForegroundCheckAt) >= 10
+        else { return }
+
+        lastForegroundCheckAt = Date()
+        Task { [weak self] in
+            guard let self else { return }
+            try? await self.api.triggerTransportCheck()
+            if self.authStep == .authenticated {
+                self.startPolling()
+                await self.reconcileLiveState()
+                if let chat = self.selectedChat {
+                    await self.markVisibleIncomingRead(chatID: chat.id)
+                }
+            }
+        }
     }
 
     /// Inserts a local negative-id message synchronously. The status label is
@@ -132,6 +166,7 @@ final class AppModel: ObservableObject {
         guard let chat = selectedChat, !composerText.isEmpty else { return }
 
         let text = composerText
+        let clientRequestID = UUID().uuidString
         composerText = ""
         let localID = nextLocalMessageID
         nextLocalMessageID -= 1
@@ -143,7 +178,8 @@ final class AppModel: ObservableObject {
             kind: "text",
             text: text,
             isRead: false,
-            sendingState: "pending"
+            sendingState: "pending",
+            clientRequestID: clientRequestID
         )
 
         mergeMessage(pending)
@@ -151,7 +187,11 @@ final class AppModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let sent = try await self.api.sendMessage(chatID: chat.id, text: text)
+                let sent = try await self.api.sendMessage(
+                    chatID: chat.id,
+                    text: text,
+                    clientRequestID: clientRequestID
+                )
                 withAnimation(.spring(duration: 0.3, bounce: 0)) {
                     self.mergeSendResponse(sent, replacingLocalID: localID)
                 }
@@ -167,6 +207,7 @@ final class AppModel: ObservableObject {
         guard let chat = selectedChat, !isSendingMedia else { return }
 
         let localID = nextLocalMessageID
+        let clientRequestID = UUID().uuidString
         nextLocalMessageID -= 1
         let pending = TelegramMessage(
             id: localID,
@@ -189,7 +230,8 @@ final class AppModel: ObservableObject {
                 isOpened: true
             ),
             isRead: false,
-            sendingState: "pending"
+            sendingState: "pending",
+            clientRequestID: clientRequestID
         )
 
         isSendingMedia = true
@@ -201,7 +243,8 @@ final class AppModel: ObservableObject {
             do {
                 let sent = try await self.api.sendMedia(
                     chatID: chat.id,
-                    upload: upload
+                    upload: upload,
+                    clientRequestID: clientRequestID
                 )
                 withAnimation(.spring(duration: 0.3, bounce: 0)) {
                     self.mergeSendResponse(sent, replacingLocalID: localID)
@@ -268,8 +311,7 @@ final class AppModel: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                self.connectionStatus = "CNT"
-                self.errorMessage = error.localizedDescription
+                await self.handleBackgroundError(error)
             }
         }
     }
@@ -306,6 +348,8 @@ final class AppModel: ObservableObject {
 
         await preloadMessages(for: freshChats)
         connectionStatus = "RDY"
+        needsReconciliation = false
+        lastReconciliationAt = Date()
         persistCache()
         startPolling()
     }
@@ -356,23 +400,16 @@ final class AppModel: ObservableObject {
         contactStatus = chat.isSavedMessages ? "RDY" : "LSR"
         contactStatusIsActive = false
         selectedChat = chat
+        startPolling()
     }
 
     private func refreshOpenChat(
         _ chat: ChatSummary,
         fetchMessages: Bool = true
     ) async {
-        do {
-            async let latestRequest: [TelegramMessage]? = {
-                guard fetchMessages else { return nil }
-                return try await api.messages(chatID: chat.id, limit: 30)
-            }()
-            async let peerRequest: TelegramUserProfile? = {
-                guard let userID = chat.peerUserID else { return nil }
-                return try await api.user(userID: userID)
-            }()
-
-            if let latest = try await latestRequest {
+        if fetchMessages {
+            do {
+                let latest = try await api.messages(chatID: chat.id, limit: 30)
                 let history = mergeServerHistory(
                     Array(latest.reversed()),
                     withLocalMessagesFor: chat.id
@@ -381,21 +418,26 @@ final class AppModel: ObservableObject {
                 if selectedChat?.id == chat.id {
                     messages = history
                 }
+            } catch {
+                await handleBackgroundError(error)
             }
-
-            if let peer = try await peerRequest, selectedChat?.id == chat.id {
-                updatePresence(peer.presence)
-            }
-
-            let incoming = (cachedMessages[chat.id] ?? [])
-                .filter { !$0.isOutgoing && $0.id > 0 }
-                .map(\.id)
-            try await api.markRead(chatID: chat.id, messageIDs: incoming)
-            connectionStatus = "RDY"
-            persistCache()
-        } catch {
-            await handleSessionError(error)
         }
+
+        if let userID = chat.peerUserID {
+            do {
+                let peer = try await api.user(userID: userID)
+                guard selectedChat?.id == chat.id else { return }
+                updatePresence(peer.presence)
+            } catch {
+                await handleBackgroundError(error)
+            }
+        }
+
+        await markVisibleIncomingRead(chatID: chat.id)
+        if selectedChat?.id == chat.id {
+            connectionStatus = "RDY"
+        }
+        persistCache()
     }
 
     private func startPolling() {
@@ -408,16 +450,67 @@ final class AppModel: ObservableObject {
     private func pollEvents() async {
         while !Task.isCancelled, authStep == .authenticated {
             do {
-                let event = try await api.nextEvent(chatID: nil)
+                let event = try await api.nextEvent(
+                    activeChatID: selectedChat?.id,
+                    afterEventID: lastEventID
+                )
                 connectionStatus = "RDY"
-                guard let event else { continue }
-                handle(event)
+                if let event {
+                    if let eventID = event.eventID {
+                        lastEventID = max(lastEventID ?? 0, eventID)
+                    }
+                    handle(event)
+                }
+                let reconciliationInterval: TimeInterval = selectedChat == nil
+                    ? 30
+                    : 15
+                if needsReconciliation
+                    || Date().timeIntervalSince(lastReconciliationAt)
+                        >= reconciliationInterval {
+                    await reconcileLiveState()
+                }
             } catch is CancellationError {
                 return
             } catch {
                 connectionStatus = "CNT"
+                needsReconciliation = true
                 try? await Task.sleep(for: .seconds(2))
             }
+        }
+    }
+
+    /// The event cursor replays short network gaps. Reconciliation is the slower
+    /// safety net for process restarts and events older than the replay window.
+    private func reconcileLiveState() async {
+        do {
+            let latestChats = try await api.chats()
+            chats = latestChats
+
+            if let selectedID = selectedChat?.id,
+               let refreshed = latestChats.first(where: { $0.id == selectedID }) {
+                selectedChat = refreshed
+                let latest = try await api.messages(
+                    chatID: refreshed.id,
+                    limit: 30
+                )
+                let history = mergeServerHistory(
+                    Array(latest.reversed()),
+                    withLocalMessagesFor: refreshed.id
+                )
+                cachedMessages[refreshed.id] = history
+                messages = history
+                await markVisibleIncomingRead(chatID: refreshed.id)
+            }
+
+            needsReconciliation = false
+            lastReconciliationAt = Date()
+            connectionStatus = "RDY"
+            persistCache()
+        } catch is CancellationError {
+            return
+        } catch {
+            needsReconciliation = true
+            connectionStatus = "CNT"
         }
     }
 
@@ -427,27 +520,24 @@ final class AppModel: ObservableObject {
     ) {
         var history = cachedMessages[message.chatID] ?? []
 
-        if let replacingLocalID,
-           let index = history.firstIndex(where: { $0.id == replacingLocalID }) {
-            if let existingIndex = history.firstIndex(where: {
-                $0.id == message.id
-            }), existingIndex != index {
-                history[existingIndex] = message
-                history.remove(at: index)
-            } else {
-                history[index] = message
+        let replacementIndex = replacingLocalID.flatMap { localID in
+            history.firstIndex(where: { $0.id == localID })
+        } ?? history.firstIndex(where: { $0.id == message.id })
+            ?? message.clientRequestID.flatMap { clientRequestID in
+                history.firstIndex(where: {
+                    $0.clientRequestID == clientRequestID
+                })
             }
-        } else if let index = history.firstIndex(where: { $0.id == message.id }) {
-            history[index] = message
-        } else if message.isOutgoing,
-                  message.id > 0,
-                  let pendingIndex = history.firstIndex(where: {
-                      $0.isOutgoing
-                          && $0.id < 0
-                          && $0.sendingState == "pending"
-                          && $0.text == message.text
-                  }) {
-            history[pendingIndex] = message
+            ?? compatiblePendingIndex(for: message, in: history)
+
+        if let replacementIndex {
+            history[replacementIndex] = message
+            history = history.enumerated().compactMap { index, candidate in
+                guard index != replacementIndex,
+                      isSameLogicalMessage(candidate, as: message)
+                else { return candidate }
+                return nil
+            }
         } else {
             history.append(message)
         }
@@ -526,23 +616,84 @@ final class AppModel: ObservableObject {
         }
         let unresolved = localOnly.filter { local in
             !serverHistory.contains { server in
-                server.isOutgoing
-                    && server.kind == local.kind
-                    && (server.kind != "text" || server.text == local.text)
-                    && abs(
-                        serverDate(server.sentAt)
-                            .timeIntervalSince(serverDate(local.sentAt))
-                    ) < 300
+                isSameLogicalMessage(server, as: local)
+                    || isCompatibleOutgoing(server, with: local)
             }
         }
         var seenIDs = Set<Int64>()
+        var seenClientRequestIDs = Set<String>()
         return (retainedOlderHistory + serverHistory + unresolved).filter {
-            seenIDs.insert($0.id).inserted
+            guard seenIDs.insert($0.id).inserted else { return false }
+            guard let clientRequestID = $0.clientRequestID else { return true }
+            return seenClientRequestIDs.insert(clientRequestID).inserted
         }
+    }
+
+    private func compatiblePendingIndex(
+        for message: TelegramMessage,
+        in history: [TelegramMessage]
+    ) -> Int? {
+        guard message.isOutgoing else { return nil }
+        return history.indices
+            .filter { history[$0].sendingState != "sent" }
+            .filter { isCompatibleOutgoing(history[$0], with: message) }
+            .min { left, right in
+                let messageDate = serverDate(message.sentAt)
+                let leftDistance = abs(
+                    serverDate(history[left].sentAt).timeIntervalSince(messageDate)
+                )
+                let rightDistance = abs(
+                    serverDate(history[right].sentAt).timeIntervalSince(messageDate)
+                )
+                return leftDistance < rightDistance
+            }
+    }
+
+    private func isSameLogicalMessage(
+        _ lhs: TelegramMessage,
+        as rhs: TelegramMessage
+    ) -> Bool {
+        if lhs.id == rhs.id { return true }
+        guard let leftRequestID = lhs.clientRequestID,
+              let rightRequestID = rhs.clientRequestID
+        else { return false }
+        return leftRequestID == rightRequestID
+    }
+
+    private func isCompatibleOutgoing(
+        _ lhs: TelegramMessage,
+        with rhs: TelegramMessage
+    ) -> Bool {
+        lhs.isOutgoing
+            && rhs.isOutgoing
+            && lhs.kind == rhs.kind
+            && (lhs.kind != "text" || lhs.text == rhs.text)
+            && abs(
+                serverDate(lhs.sentAt).timeIntervalSince(serverDate(rhs.sentAt))
+            ) < 300
     }
 
     private func serverDate(_ value: String) -> Date {
         ISO8601DateFormatter().date(from: value) ?? .distantPast
+    }
+
+    private func markVisibleIncomingRead(chatID: Int64) async {
+        guard selectedChat?.id == chatID,
+              let newestIncomingID = (cachedMessages[chatID] ?? [])
+                .reversed()
+                .first(where: { !$0.isOutgoing && $0.id > 0 })?.id
+        else { return }
+
+        do {
+            // TDLib advances the inbox read marker through this newest visible
+            // message. Sending one ID avoids the API's 100-ID ceiling on long chats.
+            try await api.markRead(
+                chatID: chatID,
+                messageIDs: [newestIncomingID]
+            )
+        } catch {
+            await handleBackgroundError(error)
+        }
     }
 
     private func handle(_ event: TelegramEvent) {
@@ -581,15 +732,38 @@ final class AppModel: ObservableObject {
         }
 
         if let action = event.action,
-           action.chatID == selectedChat?.id {
+           action.chatID == selectedChat?.id,
+           action.senderID != account?.id {
+            contactActionResetTask?.cancel()
             withAnimation(.easeInOut(duration: 0.3)) {
                 if action.action == "cancel" {
-                    contactStatus = "ONL"
-                    contactStatusIsActive = true
+                    restoreSelectedContactPresence()
                 } else {
                     contactStatus = "TYP"
                     contactStatusIsActive = true
+                    contactActionResetTask = Task { [weak self] in
+                        try? await Task.sleep(for: .seconds(6))
+                        guard !Task.isCancelled, let self else { return }
+                        self.restoreSelectedContactPresence()
+                    }
                 }
+            }
+        }
+    }
+
+    private func restoreSelectedContactPresence() {
+        guard let userID = selectedChat?.peerUserID else {
+            contactStatus = selectedChat?.isSavedMessages == true ? "RDY" : "LSR"
+            contactStatusIsActive = selectedChat?.isSavedMessages == true
+            return
+        }
+        contactStatus = "ONL"
+        contactStatusIsActive = true
+        Task { [weak self] in
+            guard let self else { return }
+            if let peer = try? await self.api.user(userID: userID),
+               self.selectedChat?.peerUserID == userID {
+                self.updatePresence(peer.presence)
             }
         }
     }
@@ -658,8 +832,44 @@ final class AppModel: ObservableObject {
            apiError.statusCode == 401 {
             await api.setBearerToken(nil)
         }
-        errorMessage = error.localizedDescription
         connectionStatus = "CNT"
+        needsReconciliation = true
+        if isTransientConnectionError(error) {
+            scheduleReconnect()
+        } else {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func handleBackgroundError(_ error: Error) async {
+        if let apiError = error as? APIClientError,
+           apiError.statusCode == 401 {
+            await handleSessionError(error)
+            return
+        }
+        if isTransientConnectionError(error) {
+            connectionStatus = "CNT"
+            needsReconciliation = true
+            scheduleReconnect()
+        }
+    }
+
+    private func isTransientConnectionError(_ error: Error) -> Bool {
+        if error is URLError { return true }
+        guard let apiError = error as? APIClientError,
+              let status = apiError.statusCode
+        else { return false }
+        return status == 408 || status == 429 || status >= 500
+    }
+
+    private func scheduleReconnect() {
+        guard reconnectTask == nil else { return }
+        reconnectTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, let self else { return }
+            self.reconnectTask = nil
+            await self.connectDevice()
+        }
     }
 
     private var bundledDeviceToken: String? {

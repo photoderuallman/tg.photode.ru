@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,6 +44,8 @@ class MockTelegramService:
         self._read_outbox_message_id = 0
         self._open_chat_counts: dict[int, int] = {}
         self._event_queues: set[asyncio.Queue[TelegramEvent]] = set()
+        self._event_history: deque[TelegramEvent] = deque(maxlen=256)
+        self._next_event_id = 1
 
     async def get_authorization_status(self) -> TelegramAuthorizationStatus:
         async with self._lock:
@@ -136,6 +139,7 @@ class MockTelegramService:
         chat_id: int,
         text: str,
         entities: list[TelegramTextEntity] | None = None,
+        client_request_id: str | None = None,
     ) -> TelegramTextMessage:
         self._require_ready()
         if chat_id != 1:
@@ -155,6 +159,7 @@ class MockTelegramService:
             kind="text",
             text=text,
             entities=entities or [],
+            client_request_id=client_request_id,
         )
         self._messages.append(message)
         self._publish(
@@ -239,6 +244,7 @@ class MockTelegramService:
         *,
         kind: str,
         path: Path,
+        client_request_id: str | None = None,
         caption: str = "",
         duration: int = 0,
         width: int = 0,
@@ -272,6 +278,7 @@ class MockTelegramService:
                 height=height or None,
                 duration=duration or None,
             ),
+            client_request_id=client_request_id,
         )
         self._messages.append(message)
         self._publish(
@@ -309,11 +316,25 @@ class MockTelegramService:
         else:
             self._open_chat_counts[chat_id] = count - 1
 
-    async def event_stream(self) -> AsyncIterator[TelegramEvent]:
+    async def event_stream(
+        self,
+        after_event_id: int | None = None,
+    ) -> AsyncIterator[TelegramEvent]:
         self._require_ready()
         queue: asyncio.Queue[TelegramEvent] = asyncio.Queue(maxsize=100)
         self._event_queues.add(queue)
+        backlog = (
+            [
+                event
+                for event in self._event_history
+                if event.event_id is not None and event.event_id > after_event_id
+            ]
+            if after_event_id is not None
+            else []
+        )
         try:
+            for event in backlog:
+                yield event
             while True:
                 yield await queue.get()
         finally:
@@ -349,6 +370,9 @@ class MockTelegramService:
             )
 
     def _publish(self, event: TelegramEvent) -> None:
+        event = event.model_copy(update={"event_id": self._next_event_id})
+        self._next_event_id += 1
+        self._event_history.append(event)
         for queue in tuple(self._event_queues):
             if queue.full():
                 queue.get_nowait()

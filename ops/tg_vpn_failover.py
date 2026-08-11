@@ -38,6 +38,7 @@ CURL_BIN = Path(os.getenv("TG_VPN_CURL_BIN", "/usr/bin/curl"))
 RUNUSER_BIN = Path(os.getenv("TG_VPN_RUNUSER_BIN", "/usr/sbin/runuser"))
 GETENT_BIN = Path(os.getenv("TG_VPN_GETENT_BIN", "/usr/bin/getent"))
 XRAY_USER = os.getenv("TG_VPN_XRAY_USER", "nobody")
+SERVICE_USER = os.getenv("TG_VPN_SERVICE_USER", "tgapp")
 PROFILE_DIR = Path(os.getenv("TG_VPN_PROFILE_DIR", "/etc/tg-vpn/profiles.d"))
 ACTIVE_CONFIG = Path(
     os.getenv("TG_VPN_ACTIVE_CONFIG", "/usr/local/etc/xray/config.json")
@@ -56,6 +57,9 @@ QUICK_FAILURE_LIMIT = int(os.getenv("TG_VPN_QUICK_FAILURE_LIMIT", "2"))
 COOLDOWN_SECONDS = int(os.getenv("TG_VPN_COOLDOWN_SECONDS", "21600"))
 SOCKET_TIMEOUT = float(os.getenv("TG_VPN_SOCKET_TIMEOUT", "5"))
 ROUND_TIMEOUT = float(os.getenv("TG_VPN_ROUND_TIMEOUT", "20"))
+ROUTE_RECOVERY_COOLDOWN_SECONDS = int(
+    os.getenv("TG_VPN_ROUTE_RECOVERY_COOLDOWN_SECONDS", "600")
+)
 
 TELEGRAM_HTTPS_TARGETS = (("api.telegram.org", 443), ("core.telegram.org", 443))
 TELEGRAM_DC_TARGETS = (("149.154.167.51", 443), ("149.154.167.91", 443))
@@ -332,6 +336,53 @@ def https_probe(
     return float(fields[1]) * 1000
 
 
+def service_https_probe(host: str, port: int = 443, path: str = "/") -> float:
+    """Probe through the exact service-account route used by TDLib."""
+
+    authority = host if port == 443 else f"{host}:{port}"
+    url = f"https://{authority}{path}"
+    try:
+        completed = subprocess.run(
+            [
+                str(RUNUSER_BIN),
+                "-u",
+                SERVICE_USER,
+                "--",
+                str(CURL_BIN),
+                "--silent",
+                "--show-error",
+                "--head",
+                "--noproxy",
+                "*",
+                "--connect-timeout",
+                str(SOCKET_TIMEOUT),
+                "--max-time",
+                str(SOCKET_TIMEOUT + 2),
+                "--output",
+                "/dev/null",
+                "--write-out",
+                "%{http_code} %{time_total}",
+                url,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=SOCKET_TIMEOUT + 4,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise OSError("service-route HTTPS probe process timed out") from error
+    fields = completed.stdout.strip().split()
+    if (
+        completed.returncode != 0
+        or len(fields) != 2
+        or not fields[0].startswith(("2", "3", "4"))
+    ):
+        raise OSError(
+            f"service-route HTTPS payload check failed with curl exit {completed.returncode}"
+        )
+    return float(fields[1]) * 1000
+
+
 class RoundTimeout(TimeoutError):
     pass
 
@@ -390,6 +441,51 @@ def probe_data(proxy: tuple[str, int], rounds: int) -> DataProbe:
                 passed, round_latencies, round_failures = one_data_round(proxy)
         except RoundTimeout:
             passed, round_latencies, round_failures = False, [], ["round_timeout"]
+        successes += int(passed)
+        latencies.extend(round_latencies)
+        failures.extend(round_failures)
+    required = rounds // 2 + 1
+    return DataProbe(
+        passed=successes >= required,
+        rounds=rounds,
+        successful_rounds=successes,
+        latency_ms=statistics.median(latencies) if latencies else None,
+        failures=failures[-12:],
+    )
+
+
+def one_service_route_round() -> tuple[bool, list[float], list[str]]:
+    latencies: list[float] = []
+    failures: list[str] = []
+    telegram_ok = False
+    for host, port in TELEGRAM_HTTPS_TARGETS:
+        try:
+            latencies.append(service_https_probe(host, port))
+            telegram_ok = True
+            break
+        except OSError as error:
+            failures.append(f"route:https:{host}:{type(error).__name__}")
+    neutral_ok = False
+    try:
+        latencies.append(service_https_probe(*NEUTRAL_HTTPS_TARGET))
+        neutral_ok = True
+    except OSError as error:
+        failures.append(
+            f"route:https:{NEUTRAL_HTTPS_TARGET[0]}:{type(error).__name__}"
+        )
+    return telegram_ok and neutral_ok, latencies, failures
+
+
+def probe_service_route(rounds: int) -> DataProbe:
+    successes = 0
+    latencies: list[float] = []
+    failures: list[str] = []
+    for _ in range(rounds):
+        try:
+            with round_deadline():
+                passed, round_latencies, round_failures = one_service_route_round()
+        except RoundTimeout:
+            passed, round_latencies, round_failures = False, [], ["route:round_timeout"]
         successes += int(passed)
         latencies.extend(round_latencies)
         failures.extend(round_failures)
@@ -663,11 +759,12 @@ def try_failover(state: dict[str, Any], *, dry_run: bool) -> bool:
         try:
             install_profile(profile)
             production_probe = probe_data(PRODUCTION_SOCKS, rounds=2)
+            route_probe = probe_service_route(rounds=2)
             services_ok = all(
                 systemctl("is-active", service, check=False).returncode == 0
                 for service in ("xray", "sing-box", "tg-photode")
             )
-            if not production_probe.passed or not services_ok:
+            if not production_probe.passed or not route_probe.passed or not services_ok:
                 raise RuntimeError("production verification failed")
         except Exception as error:
             log("candidate_rollback", profile=profile.stem, error=str(error))
@@ -685,9 +782,15 @@ def try_failover(state: dict[str, Any], *, dry_run: bool) -> bool:
             consecutive_failures=0,
             cooldowns=cooldowns,
             last_probe=asdict(production_probe),
+            last_route_probe=asdict(route_probe),
         )
         save_state(state)
-        log("failover_complete", profile=profile.stem, probe=asdict(production_probe))
+        log(
+            "failover_complete",
+            profile=profile.stem,
+            probe=asdict(production_probe),
+            route_probe=asdict(route_probe),
+        )
         return True
 
     state.update(status="no_working_candidate", cooldowns=cooldowns)
@@ -705,6 +808,9 @@ def run(*, force_deep: bool, force_failover: bool, dry_run: bool) -> int:
         return 0 if try_failover(state, dry_run=dry_run) else 2
 
     service_active = systemctl("is-active", "xray", check=False).returncode == 0
+    route_services_active = service_active and (
+        systemctl("is-active", "sing-box", check=False).returncode == 0
+    )
     rounds = 3 if force_deep or should_run_deep(state, now) else 1
     try:
         current = probe_data(PRODUCTION_SOCKS, rounds=rounds) if service_active else DataProbe(
@@ -712,17 +818,75 @@ def run(*, force_deep: bool, force_failover: bool, dry_run: bool) -> int:
         )
     except Exception as error:
         current = DataProbe(False, rounds, 0, None, [type(error).__name__])
+    try:
+        route_current = (
+            probe_service_route(rounds=rounds)
+            if route_services_active
+            else DataProbe(False, rounds, 0, None, ["route_transport_inactive"])
+        )
+    except Exception as error:
+        route_current = DataProbe(
+            False,
+            rounds,
+            0,
+            None,
+            [f"route:{type(error).__name__}"],
+        )
 
     if rounds > 1:
         state["last_deep_check_epoch"] = now
         state["last_deep_check_at"] = utc_now()
     state["last_probe"] = asdict(current)
-    log("active_probe", deep=rounds > 1, probe=asdict(current))
+    state["last_route_probe"] = asdict(route_current)
+    log(
+        "active_probe",
+        deep=rounds > 1,
+        probe=asdict(current),
+        route_probe=asdict(route_current),
+    )
 
-    if current.passed:
+    if current.passed and route_current.passed:
         state.update(status="healthy", consecutive_failures=0)
         save_state(state)
         return 0
+
+    if current.passed and not route_current.passed:
+        failures = int(state.get("consecutive_failures") or 0) + 1
+        state.update(status="route_degraded", consecutive_failures=failures)
+        last_recovery = float(state.get("last_route_recovery_epoch") or 0)
+        should_recover = (
+            not dry_run
+            and route_services_active
+            and failures >= QUICK_FAILURE_LIMIT
+            and now - last_recovery >= ROUTE_RECOVERY_COOLDOWN_SECONDS
+        )
+        if should_recover:
+            state["last_route_recovery_epoch"] = now
+            state["last_route_recovery_at"] = utc_now()
+            try:
+                restart_transport()
+                recovered = probe_service_route(rounds=1)
+            except Exception as error:
+                recovered = DataProbe(
+                    False,
+                    1,
+                    0,
+                    None,
+                    [f"route_recovery:{type(error).__name__}"],
+                )
+            state["last_route_probe"] = asdict(recovered)
+            log("route_recovery", probe=asdict(recovered))
+            if recovered.passed:
+                state.update(status="healthy", consecutive_failures=0)
+                save_state(state)
+                return 0
+        save_state(state)
+        log(
+            "active_route_degraded",
+            consecutive_failures=failures,
+            action="restart_transport" if should_recover else "confirm_next_run",
+        )
+        return 1
 
     failures = int(state.get("consecutive_failures") or 0) + 1
     state.update(status="degraded", consecutive_failures=failures)

@@ -213,3 +213,89 @@ def test_data_probe_converts_whole_round_timeout_to_failure(monkeypatch) -> None
 
     assert result.passed is False
     assert result.failures == ["round_timeout"]
+
+
+def test_service_https_probe_runs_as_tgapp_without_an_explicit_proxy(
+    monkeypatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def completed(command: list[str], **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="204 0.125", stderr="")
+
+    monkeypatch.setattr(failover.subprocess, "run", completed)
+
+    latency = failover.service_https_probe("www.gstatic.com", 443, "/generate_204")
+
+    assert latency == 125.0
+    assert calls[0][:5] == [
+        str(failover.RUNUSER_BIN),
+        "-u",
+        "tgapp",
+        "--",
+        str(failover.CURL_BIN),
+    ]
+    assert "--proxy" not in calls[0]
+    assert calls[0][-1] == "https://www.gstatic.com/generate_204"
+
+
+def test_service_route_probe_requires_telegram_and_neutral_payloads(
+    monkeypatch,
+) -> None:
+    outcomes = {
+        "api.telegram.org": OSError("offline"),
+        "core.telegram.org": 80.0,
+        "www.gstatic.com": 100.0,
+    }
+
+    def probe(host: str, port: int = 443, path: str = "/") -> float:
+        outcome = outcomes[host]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(failover, "service_https_probe", probe)
+
+    result = failover.probe_service_route(rounds=1)
+
+    assert result.passed is True
+    assert result.successful_rounds == 1
+    assert result.latency_ms == 90.0
+
+
+def test_active_check_rejects_broken_service_route(monkeypatch, tmp_path: Path) -> None:
+    saved: list[dict] = []
+    monkeypatch.setattr(failover, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(failover, "load_state", lambda: {})
+    monkeypatch.setattr(failover, "save_state", lambda state: saved.append(dict(state)))
+    monkeypatch.setattr(failover, "should_run_deep", lambda state, now: False)
+    monkeypatch.setattr(
+        failover,
+        "systemctl",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(
+        failover,
+        "probe_data",
+        lambda proxy, rounds: failover.DataProbe(True, rounds, rounds, 50.0, []),
+    )
+    monkeypatch.setattr(
+        failover,
+        "probe_service_route",
+        lambda rounds: failover.DataProbe(
+            False,
+            rounds,
+            0,
+            None,
+            ["route:https:core.telegram.org:OSError"],
+        ),
+    )
+    monkeypatch.setattr(failover, "log", lambda *args, **kwargs: None)
+
+    result = failover.run(force_deep=False, force_failover=False, dry_run=False)
+
+    assert result == 1
+    assert saved[-1]["status"] == "route_degraded"
+    assert saved[-1]["last_probe"]["passed"] is True
+    assert saved[-1]["last_route_probe"]["passed"] is False

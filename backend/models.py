@@ -97,6 +97,10 @@ class SystemStatus(BaseModel):
     telegram_auth: ComponentStatus
 
 
+class TransportCheckResponse(BaseModel):
+    accepted: bool
+
+
 class TelegramAccountProfile(BaseModel):
     id: int
     display_name: str
@@ -173,6 +177,7 @@ class TelegramMessage(BaseModel):
     media: TelegramMedia | None = None
     is_read: bool = False
     sending_state: Literal["pending", "sent", "failed"] = "sent"
+    client_request_id: str | None = None
 
 
 # Compatibility name for the first terminal client. The payload is now a generalized
@@ -185,6 +190,7 @@ class TelegramTextMessageRequest(BaseModel):
 
     text: str = Field(min_length=1, max_length=4096)
     entities: list[TelegramTextEntity] = Field(default_factory=list, max_length=100)
+    client_request_id: str | None = Field(default=None, min_length=16, max_length=64)
 
 
 class TelegramReadRequest(BaseModel):
@@ -266,6 +272,7 @@ class TelegramCustomEmoji(BaseModel):
 
 
 class TelegramEvent(BaseModel):
+    event_id: int | None = None
     type: Literal[
         "message.new",
         "message.sent",

@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch for an iPhone-requested Telegram VPN deep check
+After=network-online.target
+
+[Path]
+PathExists=/run/tg-vpn-app-check/request
+Unit=tg-vpn-app-check.service
+
+[Install]
+WantedBy=multi-user.target
