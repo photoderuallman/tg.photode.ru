@@ -5,6 +5,7 @@ from collections import deque
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
+from time import time
 
 from backend.models import (
     TelegramAccountProfile,
@@ -45,7 +46,11 @@ class MockTelegramService:
         self._open_chat_counts: dict[int, int] = {}
         self._event_queues: set[asyncio.Queue[TelegramEvent]] = set()
         self._event_history: deque[TelegramEvent] = deque(maxlen=256)
-        self._next_event_id = 1
+        self._next_event_id = int(time() * 1000) * 1000
+        self._sent_text_by_request: dict[
+            tuple[int, str],
+            tuple[str, TelegramTextMessage],
+        ] = {}
 
     async def get_authorization_status(self) -> TelegramAuthorizationStatus:
         async with self._lock:
@@ -148,6 +153,17 @@ class MockTelegramService:
                 "The requested Telegram chat was not found.",
                 status_code=404,
             )
+        if client_request_id:
+            key = (chat_id, client_request_id)
+            cached = self._sent_text_by_request.get(key)
+            if cached is not None:
+                if cached[0] != text:
+                    raise TelegramServiceError(
+                        "client_request_conflict",
+                        "This send identifier was already used for different text.",
+                        status_code=409,
+                    )
+                return cached[1]
         self._message_id += 1
         message = TelegramTextMessage(
             id=self._message_id,
@@ -165,6 +181,11 @@ class MockTelegramService:
         self._publish(
             TelegramEvent(type="message.new", chat_id=chat_id, message=message)
         )
+        if client_request_id:
+            self._sent_text_by_request[(chat_id, client_request_id)] = (
+                text,
+                message,
+            )
         return message
 
     async def get_user(self, user_id: int) -> TelegramUserProfile:

@@ -71,9 +71,11 @@ final class AppModel: ObservableObject {
         }
 
         await api.setBearerToken(token)
-        lastForegroundCheckAt = Date()
-        Task { [api] in
-            try? await api.triggerTransportCheck()
+        if lastForegroundCheckAt == .distantPast {
+            lastForegroundCheckAt = Date()
+            Task { [api] in
+                try? await api.triggerTransportCheck()
+            }
         }
         do {
             try await loadAuthenticatedState()
@@ -434,9 +436,6 @@ final class AppModel: ObservableObject {
         }
 
         await markVisibleIncomingRead(chatID: chat.id)
-        if selectedChat?.id == chat.id {
-            connectionStatus = "RDY"
-        }
         persistCache()
     }
 

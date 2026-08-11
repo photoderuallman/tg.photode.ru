@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
@@ -172,6 +173,57 @@ async def _mock_long_poll_event_response() -> tuple[httpx.Response, httpx.Respon
             return event_response, timeout_response
 
 
+async def _mock_active_chat_unfiltered_response() -> tuple[httpx.Response, int]:
+    async with app.router.lifespan_context(app):
+        service = MockTelegramService(enabled=True, require_password=False)
+        await service.submit_phone_number("+12223334455")
+        await service.submit_code("mock-code")
+        app.state.telegram_service = service
+
+        async def event_stream():
+            yield TelegramEvent(
+                type="message.new",
+                chat_id=2,
+                message=TelegramTextMessage(
+                    id=8,
+                    chat_id=2,
+                    sender_id=3000,
+                    sender_type="user",
+                    is_outgoing=False,
+                    sent_at=datetime.now(UTC),
+                    text="another chat stays live",
+                ),
+            )
+
+        service.event_stream = event_stream  # type: ignore[method-assign]
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.get(
+                "/api/events/next?active_chat_id=1&timeout_seconds=1"
+            )
+        return response, service._open_chat_counts.get(1, 0)
+
+
+async def _trigger_transport_check(directory: str) -> httpx.Response:
+    async with app.router.lifespan_context(app):
+        trigger = Path(directory) / "request"
+        app.state.settings = replace(
+            app.state.settings,
+            vpn_check_trigger_path=str(trigger),
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post("/api/transport/check", json={})
+        assert trigger.is_file()
+        return response
+
+
 async def _mock_extended_api_sequence() -> list[httpx.Response]:
     with TemporaryDirectory() as directory:
         async with app.router.lifespan_context(app):
@@ -324,6 +376,24 @@ def test_long_poll_returns_an_event_and_clean_timeout() -> None:
     assert event_response.status_code == 200
     assert event_response.json()["message"]["text"] == "long poll message"
     assert timeout_response.status_code == 204
+
+
+def test_active_chat_enables_typing_without_filtering_other_chats() -> None:
+    response, remaining_open_count = asyncio.run(
+        _mock_active_chat_unfiltered_response()
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"]["text"] == "another chat stays live"
+    assert remaining_open_count == 0
+
+
+def test_authenticated_client_can_queue_an_immediate_transport_check() -> None:
+    with TemporaryDirectory() as directory:
+        response = asyncio.run(_trigger_transport_check(directory))
+
+    assert response.status_code == 202
+    assert response.json() == {"accepted": True}
 
 
 def test_extended_backend_api_contracts() -> None:

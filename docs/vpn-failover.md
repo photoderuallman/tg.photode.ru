@@ -106,10 +106,28 @@ systemctl daemon-reload
 systemctl enable --now tg-vpn-failover.timer
 ```
 
+The iPhone app also requests a deep check whenever it becomes active. Install the
+root-owned path trigger and its runtime directory once:
+
+```bash
+install -m 0644 ops/tg-vpn-app-check.service /etc/systemd/system/tg-vpn-app-check.service
+install -m 0644 ops/tg-vpn-app-check.path /etc/systemd/system/tg-vpn-app-check.path
+install -m 0644 ops/tg-vpn-app-check.tmpfiles.conf /etc/tmpfiles.d/tg-vpn-app-check.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/tg-vpn-app-check.conf
+systemctl daemon-reload
+systemctl enable --now tg-vpn-app-check.path
+```
+
+Set `VPN_CHECK_TRIGGER_PATH=/run/tg-vpn-app-check/request` in the gateway
+environment. The unprivileged `tgapp` process can only create that marker. The
+path unit consumes it and runs `tg-vpn-failover --force-deep` as root; the app
+never receives general service-control permissions.
+
 Run a non-switching candidate evaluation and read status:
 
 ```bash
 /usr/local/libexec/tg-vpn-failover --force-failover --dry-run
 /usr/local/libexec/tg-vpn-failover --status
 journalctl -u tg-vpn-failover.service --since today --no-pager
+journalctl -u tg-vpn-app-check.service --since today --no-pager
 ```

@@ -12,6 +12,7 @@ from ctypes.util import find_library
 from datetime import UTC, datetime
 from itertools import count
 from pathlib import Path
+from time import time
 from typing import Any, Protocol
 
 from backend.models import (
@@ -159,8 +160,15 @@ class TDLibTelegramService:
         self._stopping = False
         self._event_queues: set[asyncio.Queue[TelegramEvent]] = set()
         self._event_history: deque[TelegramEvent] = deque(maxlen=256)
-        self._event_ids = count(1)
+        # Epoch-prefixed IDs stay monotonic across service restarts, so a client
+        # cursor from the previous process cannot suppress new events.
+        self._event_ids = count(int(time() * 1000) * 1000)
         self._client_request_by_message_id: dict[int, str] = {}
+        self._send_idempotency_lock = asyncio.Lock()
+        self._sent_text_by_request: dict[
+            tuple[int, str],
+            tuple[str, TelegramTextMessage],
+        ] = {}
         self._last_read_inbox_by_chat: dict[int, int] = {}
         self._last_read_outbox_by_chat: dict[int, int] = {}
         self._private_chat_by_user: dict[int, int] = {}
@@ -365,11 +373,44 @@ class TDLibTelegramService:
                 "Enter between 1 and 4096 characters of message text.",
                 status_code=400,
             )
+        if client_request_id:
+            key = (chat_id, client_request_id)
+            async with self._send_idempotency_lock:
+                cached = self._sent_text_by_request.get(key)
+                if cached is not None:
+                    if cached[0] != text:
+                        raise TelegramServiceError(
+                            "client_request_conflict",
+                            "This send identifier was already used for different text.",
+                            status_code=409,
+                        )
+                    return cached[1]
+                sent = await self._send_text_once(
+                    chat_id,
+                    text,
+                    entities or [],
+                    client_request_id,
+                )
+                if len(self._sent_text_by_request) >= 256:
+                    self._sent_text_by_request.pop(
+                        next(iter(self._sent_text_by_request))
+                    )
+                self._sent_text_by_request[key] = (text, sent)
+                return sent
+        return await self._send_text_once(chat_id, text, entities or [], None)
+
+    async def _send_text_once(
+        self,
+        chat_id: int,
+        text: str,
+        entities: list[TelegramTextEntity],
+        client_request_id: str | None,
+    ) -> TelegramTextMessage:
         message = await self._send_message_content(
             chat_id,
             {
                 "@type": "inputMessageText",
-                "text": self._formatted_text(text, entities or []),
+                "text": self._formatted_text(text, entities),
                 "link_preview_options": None,
                 "clear_draft": True,
             },
@@ -732,6 +773,11 @@ class TDLibTelegramService:
                 raw_message,
                 client_request_id=client_request_id,
             )
+            if client_request_id:
+                key = (message.chat_id, client_request_id)
+                cached = self._sent_text_by_request.get(key)
+                if cached is not None:
+                    self._sent_text_by_request[key] = (cached[0], message)
             self._publish(
                 TelegramEvent(
                     type="message.sent",
@@ -751,6 +797,11 @@ class TDLibTelegramService:
                 raw_message,
                 client_request_id=client_request_id,
             )
+            if client_request_id:
+                key = (message.chat_id, client_request_id)
+                cached = self._sent_text_by_request.get(key)
+                if cached is not None:
+                    self._sent_text_by_request[key] = (cached[0], message)
             self._publish(
                 TelegramEvent(
                     type="message.failed",

@@ -396,7 +396,16 @@ async def _run_messaging_sequence(tmp_path: Any) -> dict[str, Any]:
             limit=10,
             before_message_id=7,
         )
-        sent = await service.send_text_message(42, "outgoing smoke test")
+        sent = await service.send_text_message(
+            42,
+            "outgoing smoke test",
+            client_request_id="44444444-4444-4444-4444-444444444444",
+        )
+        repeated = await service.send_text_message(
+            42,
+            "outgoing smoke test",
+            client_request_id="44444444-4444-4444-4444-444444444444",
+        )
 
         stream = service.event_stream()
         event_task = asyncio.create_task(anext(stream))
@@ -415,6 +424,7 @@ async def _run_messaging_sequence(tmp_path: Any) -> dict[str, Any]:
             "history": history,
             "older_history": older_history,
             "sent": sent,
+            "repeated": repeated,
             "event": event,
             "queries": fake.sent,
         }
@@ -437,11 +447,18 @@ def test_tdlib_service_normalizes_terminal_messaging_flow(tmp_path: Any) -> None
     assert result["history"][0].text == "incoming history"
     assert result["older_history"] == []
     assert result["sent"].text == "outgoing smoke test"
+    assert result["repeated"].id == result["sent"].id
+    assert result["sent"].client_request_id == (
+        "44444444-4444-4444-4444-444444444444"
+    )
     assert result["event"].message.text == "live incoming"
     send_query = next(
         query for query in result["queries"] if query["@type"] == "sendMessage"
     )
     assert send_query["input_message_content"]["@type"] == "inputMessageText"
+    assert sum(
+        query["@type"] == "sendMessage" for query in result["queries"]
+    ) == 1
     history_queries = [
         query for query in result["queries"] if query["@type"] == "getChatHistory"
     ]

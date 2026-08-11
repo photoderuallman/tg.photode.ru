@@ -123,6 +123,7 @@ SSH tunnel open and add `--url http://127.0.0.1:18080` before the command name.
 
 - `GET /api/health` — process liveness
 - `GET /api/status` — normalized application, VPN, Telegram network, and authorization readiness
+- `POST /api/transport/check` — queue a root-owned deep VPN/Telegram route check when the iPhone app becomes active
 - `GET /api/telegram/auth` — normalized authorization state
 - `POST /api/telegram/auth/phone` — submit an international phone number
 - `POST /api/telegram/auth/code` — submit the current authorization code
@@ -139,7 +140,7 @@ SSH tunnel open and add `--url http://127.0.0.1:18080` before the command name.
 - `GET /api/files/{file_id}` — download a TDLib-managed media file
 - `GET /api/emojis/custom/{custom_emoji_id}` — resolve a custom emoji asset
 - `GET /api/events?chat_id=...` — optionally chat-filtered server-sent event stream
-- `GET /api/events/next?chat_id=...` — ordinary HTTPS long-poll fallback for restricted networks
+- `GET /api/events/next?active_chat_id=...&after_event_id=...` — replayable HTTPS long poll that keeps the visible chat active without filtering other chat updates
 - `WS /api/events?chat_id=...` — optionally chat-filtered WebSocket event stream
 
 The frontend integration contract and payload examples are in

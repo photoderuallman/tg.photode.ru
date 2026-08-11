@@ -360,13 +360,13 @@ struct ChatView: View {
                 Button(action: composerAction) {
                     ZStack {
                         if model.composerText.isEmpty {
-                            Text("O.")
+                            Text("O")
                                 .transition(
                                     .scale(scale: 0.25)
                                         .combined(with: .opacity)
                                 )
                         } else {
-                            Text("S.")
+                            Text("S")
                                 .transition(
                                     .scale(scale: 0.25)
                                         .combined(with: .opacity)
@@ -452,7 +452,7 @@ struct ChatView: View {
                 Spacer(minLength: 8)
 
                 Button(action: finishVideoNoteRecording) {
-                    Text("S.")
+                    Text("S")
                         .photodeHeaderTypography()
                         .foregroundStyle(Color.photodeActive)
                         .frame(
@@ -777,7 +777,7 @@ private struct MediaPickerGlassLabel: View {
     let isDisabled: Bool
 
     var body: some View {
-        Text("M.")
+        Text("M")
             .photodeHeaderTypography()
             .foregroundStyle(
                 isDisabled ? Color.photodeDisabled : Color.photodeActive
