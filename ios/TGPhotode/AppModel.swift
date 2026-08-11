@@ -16,6 +16,7 @@ final class AppModel: ObservableObject {
     @Published var contactStatus = "LSR"
     @Published var contactStatusIsActive = false
     @Published var isBusy = false
+    @Published private(set) var isSendingMedia = false
     @Published private(set) var isLoadingOlderMessages = false
     @Published var connectionStatus = "CNT"
     @Published var errorMessage: String?
@@ -32,6 +33,13 @@ final class AppModel: ObservableObject {
     private var nextLocalMessageID: Int64 = -1
 
     init() {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-ChatDesignPreview") {
+            installChatDesignPreview()
+            return
+        }
+        #endif
+
         if let cached = CacheStore.loadSnapshot() {
             restore(cached)
         }
@@ -152,6 +160,68 @@ final class AppModel: ObservableObject {
                 self.markLocalMessageFailed(localID, chatID: chat.id)
                 await self.handleSessionError(error)
             }
+        }
+    }
+
+    func sendMedia(_ upload: TelegramMediaUpload) {
+        guard let chat = selectedChat, !isSendingMedia else { return }
+
+        let localID = nextLocalMessageID
+        nextLocalMessageID -= 1
+        let pending = TelegramMessage(
+            id: localID,
+            chatID: chat.id,
+            isOutgoing: true,
+            sentAt: ISO8601DateFormatter().string(from: Date()),
+            kind: upload.kind.rawValue,
+            text: "",
+            media: TelegramMedia(
+                kind: upload.kind.rawValue,
+                fileID: localID,
+                downloadURL: "",
+                fileName: upload.fileName,
+                mimeType: upload.mimeType,
+                size: upload.data.count,
+                width: upload.width > 0 ? upload.width : nil,
+                height: upload.height > 0 ? upload.height : nil,
+                duration: upload.duration > 0 ? upload.duration : nil,
+                thumbnailFileID: nil,
+                isOpened: true
+            ),
+            isRead: false,
+            sendingState: "pending"
+        )
+
+        isSendingMedia = true
+        mergeMessage(pending)
+
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isSendingMedia = false }
+            do {
+                let sent = try await self.api.sendMedia(
+                    chatID: chat.id,
+                    upload: upload
+                )
+                withAnimation(.spring(duration: 0.3, bounce: 0)) {
+                    self.mergeSendResponse(sent, replacingLocalID: localID)
+                }
+                await self.refreshChats()
+            } catch {
+                self.markLocalMessageFailed(localID, chatID: chat.id)
+                await self.handleSessionError(error)
+            }
+        }
+    }
+
+    func sendChatAction(_ action: String, progress: Int = 0) {
+        guard let chatID = selectedChat?.id else { return }
+        Task { [api] in
+            try? await api.sendChatAction(
+                chatID: chatID,
+                action: action,
+                progress: progress
+            )
         }
     }
 
@@ -457,7 +527,8 @@ final class AppModel: ObservableObject {
         let unresolved = localOnly.filter { local in
             !serverHistory.contains { server in
                 server.isOutgoing
-                    && server.text == local.text
+                    && server.kind == local.kind
+                    && (server.kind != "text" || server.text == local.text)
                     && abs(
                         serverDate(server.sentAt)
                             .timeIntervalSince(serverDate(local.sentAt))
@@ -599,4 +670,64 @@ final class AppModel: ObservableObject {
         guard token.count >= 32, !token.contains("$(") else { return nil }
         return token
     }
+
+    #if DEBUG
+    private func installChatDesignPreview() {
+        let previewChat = ChatSummary(
+            id: 42,
+            title: "Андрей Петров",
+            type: "private",
+            unreadCount: 0,
+            lastMessage: "Да, это действительно работает",
+            lastMessageID: 12,
+            lastMessageIsOutgoing: true,
+            peerUserID: 77,
+            isSavedMessages: false,
+            profilePhotoURL: nil,
+            lastReadOutboxMessageID: 10
+        )
+        let rows: [(Bool, String, Bool)] = [
+            (false, "А в теории через термукс можно?", true),
+            (true, "Потому что это действительно работает", true),
+            (true, "Магическим абсолютно образом", true),
+            (false, "Го", true),
+            (true, "Да, можно", true),
+            (true, "Если хочешь, поставим без интерфейса", true),
+            (true, "В целом тоже вайб", true),
+            (false, "Что за постпанк", true),
+            (true, "Новая стадия проекта", true),
+            (false, "Я проверил сетевое ограничение", true),
+            (true, "Теперь чат работает через VPS", false),
+            (true, "И сохраняет позицию при обновлении", false),
+        ]
+        let previewMessages = rows.enumerated().map { index, row in
+            TelegramMessage(
+                id: Int64(index + 1),
+                chatID: previewChat.id,
+                isOutgoing: row.0,
+                sentAt: ISO8601DateFormatter().string(from: Date()),
+                kind: "text",
+                text: row.1,
+                isRead: row.2,
+                sendingState: "sent"
+            )
+        }
+
+        account = AccountProfile(
+            id: 1,
+            displayName: "Lucius P.",
+            username: "lucius",
+            profilePhotoURL: nil
+        )
+        chats = [previewChat]
+        selectedChat = previewChat
+        messages = previewMessages
+        cachedMessages[previewChat.id] = previewMessages
+        contactStatus = "ONL"
+        contactStatusIsActive = true
+        connectionStatus = "RDY"
+        authStep = .authenticated
+        didBootstrap = true
+    }
+    #endif
 }

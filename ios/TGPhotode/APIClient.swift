@@ -31,7 +31,9 @@ actor APIClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = true
         configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 120
+        // Media crosses a shared-host relay before reaching the private VPS.
+        // Give a 100 MB upload enough time on constrained mobile networks.
+        configuration.timeoutIntervalForResource = 300
         configuration.httpAdditionalHeaders = ["Accept": "application/json"]
         session = URLSession(
             configuration: configuration,
@@ -84,6 +86,64 @@ actor APIClient {
             path: "/api/chats/\(chatID)/messages",
             method: "POST",
             body: SendMessageRequest(text: text)
+        )
+    }
+
+    func sendMedia(
+        chatID: Int64,
+        upload: TelegramMediaUpload
+    ) async throws -> TelegramMessage {
+        let boundary = "TGPhotode-\(UUID().uuidString)"
+        var body = Data()
+
+        body.appendMultipartField(
+            named: "kind",
+            value: upload.kind.rawValue,
+            boundary: boundary
+        )
+        body.appendMultipartField(
+            named: "duration",
+            value: String(upload.duration),
+            boundary: boundary
+        )
+        body.appendMultipartField(
+            named: "width",
+            value: String(upload.width),
+            boundary: boundary
+        )
+        body.appendMultipartField(
+            named: "height",
+            value: String(upload.height),
+            boundary: boundary
+        )
+        body.appendMultipartFile(
+            named: "file",
+            fileName: upload.fileName,
+            mimeType: upload.mimeType,
+            data: upload.data,
+            boundary: boundary
+        )
+        body.append("--\(boundary)--\r\n".utf8Data)
+
+        let (data, _) = try await responseData(
+            path: "/api/chats/\(chatID)/media",
+            method: "POST",
+            body: body,
+            contentType: "multipart/form-data; boundary=\(boundary)",
+            authenticated: true
+        )
+        return try decoder.decode(TelegramMessage.self, from: data)
+    }
+
+    func sendChatAction(
+        chatID: Int64,
+        action: String,
+        progress: Int = 0
+    ) async throws {
+        let _: TelegramChatActionState = try await request(
+            path: "/api/chats/\(chatID)/actions",
+            method: "POST",
+            body: ChatActionRequest(action: action, progress: progress)
         )
     }
 
@@ -148,6 +208,7 @@ actor APIClient {
         method: String = "GET",
         query: [URLQueryItem] = [],
         body: Data? = nil,
+        contentType: String? = nil,
         authenticated: Bool
     ) async throws -> (Data, HTTPURLResponse) {
         var components = URLComponents(url: relayURL, resolvingAgainstBaseURL: false)!
@@ -164,7 +225,10 @@ actor APIClient {
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if body != nil {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(
+                contentType ?? "application/json",
+                forHTTPHeaderField: "Content-Type"
+            )
         }
         if authenticated, let bearerToken {
             request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
@@ -183,6 +247,44 @@ actor APIClient {
             )
         }
         return (data, response)
+    }
+}
+
+private extension String {
+    var utf8Data: Data { Data(utf8) }
+}
+
+private extension Data {
+    mutating func appendMultipartField(
+        named name: String,
+        value: String,
+        boundary: String
+    ) {
+        append("--\(boundary)\r\n".utf8Data)
+        append(
+            "Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n"
+                .utf8Data
+        )
+        append(value.utf8Data)
+        append("\r\n".utf8Data)
+    }
+
+    mutating func appendMultipartFile(
+        named name: String,
+        fileName: String,
+        mimeType: String,
+        data: Data,
+        boundary: String
+    ) {
+        append("--\(boundary)\r\n".utf8Data)
+        append(
+            "Content-Disposition: form-data; name=\"\(name)\"; "
+                .utf8Data
+        )
+        append("filename=\"\(fileName)\"\r\n".utf8Data)
+        append("Content-Type: \(mimeType)\r\n\r\n".utf8Data)
+        append(data)
+        append("\r\n".utf8Data)
     }
 }
 

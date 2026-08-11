@@ -47,17 +47,59 @@ struct TelegramMessage: Codable, Identifiable, Equatable, Sendable {
     let sentAt: String
     let kind: String
     let text: String
+    var media: TelegramMedia? = nil
     var isRead: Bool
     var sendingState: String
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, text
+        case id, kind, text, media
         case chatID = "chat_id"
         case isOutgoing = "is_outgoing"
         case sentAt = "sent_at"
         case isRead = "is_read"
         case sendingState = "sending_state"
     }
+}
+
+struct TelegramMedia: Codable, Equatable, Sendable {
+    let kind: String
+    let fileID: Int64
+    let downloadURL: String
+    let fileName: String?
+    let mimeType: String?
+    let size: Int
+    let width: Int?
+    let height: Int?
+    let duration: Int?
+    let thumbnailFileID: Int64?
+    let isOpened: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case kind, size, width, height, duration
+        case fileID = "file_id"
+        case downloadURL = "download_url"
+        case fileName = "file_name"
+        case mimeType = "mime_type"
+        case thumbnailFileID = "thumbnail_file_id"
+        case isOpened = "is_opened"
+    }
+}
+
+enum TelegramMediaKind: String, Sendable {
+    case photo
+    case video
+    case voiceNote = "voice_note"
+    case videoNote = "video_note"
+}
+
+struct TelegramMediaUpload: Sendable {
+    let data: Data
+    let kind: TelegramMediaKind
+    let fileName: String
+    let mimeType: String
+    let duration: Int
+    let width: Int
+    let height: Int
 }
 
 struct TelegramEvent: Codable, Sendable {
@@ -141,4 +183,9 @@ struct ReadMessagesRequest: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case messageIDs = "message_ids"
     }
+}
+
+struct ChatActionRequest: Codable, Sendable {
+    let action: String
+    let progress: Int
 }

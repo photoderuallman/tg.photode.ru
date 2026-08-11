@@ -1,0 +1,13 @@
+[Unit]
+Description=Watch Telegram VPN continuously and run a deep check every 30 minutes
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=2min
+AccuracySec=15s
+RandomizedDelaySec=15s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

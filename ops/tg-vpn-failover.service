@@ -1,0 +1,25 @@
+[Unit]
+Description=Telegram VPN quality and regional failover check
+After=network-online.target xray.service sing-box.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/tg-vpn-failover
+ExecStopPost=/usr/local/libexec/tg-vpn-failover --ensure-transport
+TimeoutStartSec=300
+StateDirectory=tg-vpn-failover
+RuntimeDirectory=tg-vpn-failover
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/usr/local/etc/xray /var/lib/tg-vpn-failover /run/tg-vpn-failover

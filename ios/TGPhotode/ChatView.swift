@@ -1,4 +1,7 @@
+import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
+import UIKit
 
 struct ChatView: View {
     @ObservedObject var model: AppModel
@@ -7,57 +10,107 @@ struct ChatView: View {
     @FocusState private var composerFocused: Bool
     @State private var didEstablishInitialPosition = false
     @State private var isClosing = false
+    @State private var isAtBottom = true
+    @State private var isRecordingVideoNote = ProcessInfo.processInfo.arguments
+        .contains("-ChatRecordingPreview")
+    @State private var recordingStartedAt: Date? = ProcessInfo.processInfo
+        .arguments.contains("-ChatRecordingPreview") ? Date() : nil
+    @State private var recordingElapsed: TimeInterval = 0
+    @State private var selectedMediaItem: PhotosPickerItem?
+    @State private var isFinishingVideoNote = false
+    @State private var lastTypingSentAt = Date.distantPast
+    @State private var typingCancelTask: Task<Void, Never>?
+    @StateObject private var videoRecorder = VideoNoteRecorder()
+    @Namespace private var videoNoteNamespace
 
     private let bottomAnchorID = "chat-bottom-anchor"
 
     var body: some View {
         GeometryReader { geometry in
-            let gridWidth = max(geometry.size.width - 72, 0)
+            let gridWidth = max(
+                geometry.size.width - (PhotodeMetrics.messageInset * 2),
+                0
+            )
             let columnWidth = gridWidth / 8
 
-            VStack(spacing: 0) {
-                chatHeader(columnWidth: columnWidth)
-                    .frame(height: 52)
-
+            ZStack(alignment: .top) {
                 messageList(
                     columnWidth: columnWidth,
                     viewportHeight: geometry.size.height
                 )
-                    .layoutPriority(1)
+                .opacity(isRecordingVideoNote ? 0.24 : 1)
+                .animation(
+                    .easeInOut(duration: 0.2),
+                    value: isRecordingVideoNote
+                )
 
-                composer(columnWidth: columnWidth)
-                    .padding(.top, 20)
+                if isRecordingVideoNote {
+                    recordingPreview(in: geometry.size)
+                        .transition(.opacity)
+                        .zIndex(2)
+                }
+
+                chatHeader
+                    .padding(.horizontal, PhotodeMetrics.screenInset)
+                    .padding(.top, 8)
+                    .zIndex(3)
             }
-            .frame(width: gridWidth)
-            .padding(.horizontal, 36)
-            .padding(.top, 20)
-            .padding(.bottom, 16)
         }
-        .font(.system(size: 18, weight: .medium))
-        .lineSpacing(2)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if isRecordingVideoNote {
+                recordingToolbar
+            } else {
+                composer
+            }
+        }
         .background(Color.photodeBackground)
+        .animation(
+            .spring(duration: 0.3, bounce: 0),
+            value: isRecordingVideoNote
+        )
+        .onChange(of: selectedMediaItem) { _, item in
+            guard let item else { return }
+            Task { await sendPickedMedia(item) }
+        }
+        .onChange(of: model.composerText) { _, text in
+            updateTypingState(for: text)
+        }
+        .onDisappear {
+            typingCancelTask?.cancel()
+            model.sendChatAction("cancel")
+        }
     }
 
-    private func chatHeader(columnWidth: CGFloat) -> some View {
-        Button(action: dismissKeyboardThenClose) {
-            HStack(alignment: .top, spacing: 0) {
-                ZStack(alignment: .topLeading) {
-                    AccentBowl(seed: chat.id)
-                        .padding(.leading, 1)
-                        .padding(.top, 5)
-                }
-                .frame(width: columnWidth, height: 52, alignment: .topLeading)
+    private var chatHeader: some View {
+        PhotodeGlassGroup {
+            HStack(spacing: PhotodeMetrics.glassSpacing) {
+                Button(action: dismissKeyboardThenClose) {
+                    HStack(spacing: 12) {
+                        AccentBowl(seed: chat.id)
 
-                Text(chat.isSavedMessages ? "Saved Messages" : chat.title)
+                        Text(chat.isSavedMessages ? "Saved Messages" : chat.title)
+                            .lineLimit(1)
+                    }
+                    .photodeHeaderTypography()
                     .foregroundStyle(
                         model.contactStatusIsActive
                             ? Color.photodeActive
                             : Color.photodeDisabled
                     )
-                    .lineLimit(1)
-                    .frame(width: columnWidth * 6, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .frame(height: PhotodeMetrics.glassControlHeight)
+                    .contentShape(Capsule())
+                    .photodeGlassCapsule(interactive: true)
+                }
+                .buttonStyle(PhotodePressButtonStyle())
+                .frame(minHeight: PhotodeMetrics.minimumHitArea)
+                .disabled(isClosing)
+                .accessibilityLabel("Back to chats")
+
+                Spacer(minLength: 12)
 
                 Text(model.contactStatus)
+                    .photodeHeaderTypography()
                     .foregroundStyle(
                         model.contactStatusIsActive
                             ? Color.photodeActive
@@ -67,13 +120,50 @@ struct ChatView: View {
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
                     .monospacedDigit()
-                    .frame(width: columnWidth, alignment: .trailing)
+                    .padding(.horizontal, 14)
+                    .frame(height: PhotodeMetrics.glassControlHeight)
+                    .photodeGlassCapsule()
+                    .accessibilityLabel("Contact status")
+                    .accessibilityValue(model.contactStatus)
             }
-            .frame(minHeight: 44, alignment: .top)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .disabled(isClosing)
+    }
+
+    private func recordingPreview(in size: CGSize) -> some View {
+        let diameter = min(size.width - 72, 330)
+
+        return VStack(spacing: 0) {
+            Spacer(minLength: 82)
+
+            ZStack {
+                Color.photodeDisabled.opacity(0.55)
+
+                VideoNotePreview(
+                    session: videoRecorder.session,
+                    mirrorsVideo: videoRecorder.cameraPosition == .front
+                )
+                .opacity(videoRecorder.state == .recording ? 1 : 0)
+
+                if videoRecorder.state == .preparing {
+                    ProgressView()
+                        .tint(Color.photodeActive)
+                }
+            }
+                .frame(width: diameter, height: diameter)
+                .clipShape(Circle())
+                .overlay {
+                    Circle()
+                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                }
+                .matchedGeometryEffect(
+                    id: "video-note",
+                    in: videoNoteNamespace
+                )
+                .accessibilityLabel("Video message preview")
+
+            Spacer(minLength: 80)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func messageList(
@@ -82,10 +172,14 @@ struct ChatView: View {
     ) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
+                LazyVStack(
+                    alignment: .leading,
+                    spacing: PhotodeMetrics.messageGroupSpacing
+                ) {
                     ForEach(messageGroups) { group in
                         HStack(alignment: .top, spacing: 0) {
                             Text(group.label)
+                                .photodeMessageTypography()
                                 .foregroundStyle(group.labelColor)
                                 .frame(width: columnWidth, alignment: .leading)
                                 .transition(
@@ -93,11 +187,18 @@ struct ChatView: View {
                                         .combined(with: .opacity)
                                 )
 
-                            VStack(alignment: .leading, spacing: 8) {
+                            VStack(
+                                alignment: .leading,
+                                spacing: PhotodeMetrics.messageSpacing
+                            ) {
                                 ForEach(group.messages) { message in
                                     Text(messageText(message))
+                                        .photodeMessageTypography()
                                         .foregroundStyle(Color.photodeActive)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .frame(
+                                            maxWidth: .infinity,
+                                            alignment: .leading
+                                        )
                                         .id(message.id)
                                         .transition(
                                             .opacity.combined(
@@ -111,21 +212,28 @@ struct ChatView: View {
                                         }
                                 }
                             }
-                            .frame(width: columnWidth * 7, alignment: .leading)
+                            .frame(
+                                width: columnWidth * 7,
+                                alignment: .leading
+                            )
                         }
                     }
 
                     Color.clear
                         .frame(height: 1)
                         .id(bottomAnchorID)
+                        .onAppear { isAtBottom = true }
+                        .onDisappear { isAtBottom = false }
                 }
-                .padding(.top, 8)
+                .padding(.horizontal, PhotodeMetrics.messageInset)
+                .padding(.top, 68)
+                .padding(.bottom, 8)
             }
+            .scrollIndicators(.hidden)
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
+            .photodeChatScrollEdges()
             .onAppear {
-                // defaultScrollAnchor lays out at the bottom before the first
-                // frame. The flag only enables later, intentional animations.
                 Task { @MainActor in
                     await Task.yield()
                     didEstablishInitialPosition = true
@@ -134,7 +242,8 @@ struct ChatView: View {
             .onChange(of: model.messages.last?.id) { oldID, newID in
                 guard didEstablishInitialPosition,
                       let newID,
-                      newID != oldID
+                      newID != oldID,
+                      isAtBottom || model.messages.last?.isOutgoing == true
                 else { return }
                 scrollToBottom(using: proxy, animated: true)
             }
@@ -152,40 +261,322 @@ struct ChatView: View {
         }
     }
 
-    private func composer(columnWidth: CGFloat) -> some View {
-        HStack(alignment: .top, spacing: 0) {
-            Button("M.") { }
-                .foregroundStyle(Color.photodeDisabled)
-                .frame(width: columnWidth, alignment: .leading)
-                .disabled(true)
+    private var composer: some View {
+        let mediaIsDisabled = model.isSendingMedia
 
-            TextField(
-                "",
-                text: $model.composerText,
-                prompt: Text("Message")
-                    .foregroundStyle(Color.photodeDisabled),
-                axis: .vertical
-            )
+        return PhotodeGlassGroup {
+            HStack(alignment: .bottom, spacing: PhotodeMetrics.glassSpacing) {
+                PhotosPicker(
+                    selection: $selectedMediaItem,
+                    matching: .any(of: [.images, .videos]),
+                    preferredItemEncoding: .automatic
+                ) {
+                    MediaPickerGlassLabel(isDisabled: mediaIsDisabled)
+                }
+                .buttonStyle(PhotodePressButtonStyle())
+                .frame(
+                    width: PhotodeMetrics.minimumHitArea,
+                    height: PhotodeMetrics.minimumHitArea
+                )
+                .disabled(model.isSendingMedia)
+                .accessibilityLabel("Choose media")
+
+                TextField(
+                    "",
+                    text: $model.composerText,
+                    prompt: Text("Message")
+                        .foregroundStyle(Color.photodeDisabled),
+                    axis: .vertical
+                )
                 .lineLimit(1...6)
                 .focused($composerFocused)
+                .photodeHeaderTypography()
                 .foregroundStyle(Color.photodeActive)
                 .tint(Color.photodeActive)
                 .textFieldStyle(.plain)
-                .frame(width: columnWidth * 6, alignment: .topLeading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .frame(minHeight: PhotodeMetrics.glassControlHeight)
+                .fixedSize(horizontal: false, vertical: true)
+                .photodeGlassCapsule(interactive: true)
+                .accessibilityLabel("Message")
 
-            Button(model.composerText.isEmpty ? "O." : "S.") {
-                if !model.composerText.isEmpty {
-                    model.sendMessage()
+                Button(action: composerAction) {
+                    ZStack {
+                        if model.composerText.isEmpty {
+                            Text("O.")
+                                .transition(
+                                    .scale(scale: 0.25)
+                                        .combined(with: .opacity)
+                                )
+                        } else {
+                            Text("S.")
+                                .transition(
+                                    .scale(scale: 0.25)
+                                        .combined(with: .opacity)
+                                )
+                        }
+                    }
+                    .photodeHeaderTypography()
+                    .foregroundStyle(
+                        model.composerText.isEmpty
+                            ? Color.photodeDisabled
+                            : Color.photodeActive
+                    )
+                    .frame(
+                        width: PhotodeMetrics.glassControlHeight,
+                        height: PhotodeMetrics.glassControlHeight
+                    )
+                    .contentShape(Circle())
+                    .matchedGeometryEffect(
+                        id: "video-note",
+                        in: videoNoteNamespace,
+                        isSource: !isRecordingVideoNote
+                    )
+                    .photodeGlassCircle(interactive: true)
+                }
+                .buttonStyle(PhotodePressButtonStyle())
+                .frame(
+                    width: PhotodeMetrics.minimumHitArea,
+                    height: PhotodeMetrics.minimumHitArea
+                )
+                .accessibilityLabel(
+                    model.composerText.isEmpty
+                        ? "Hold to record a video message"
+                        : "Send message"
+                )
+                .onLongPressGesture(minimumDuration: 0.35) {
+                    guard model.composerText.isEmpty else { return }
+                    beginVideoNoteRecording()
                 }
             }
-            .foregroundStyle(
-                model.composerText.isEmpty
-                    ? Color.photodeDisabled
-                    : Color.photodeActive
-            )
-            .frame(width: columnWidth, alignment: .trailing)
         }
-        .frame(minHeight: 20, alignment: .top)
+        .padding(.horizontal, PhotodeMetrics.screenInset)
+        .padding(.top, 8)
+        .padding(.bottom, 0)
+    }
+
+    private var recordingToolbar: some View {
+        PhotodeGlassGroup {
+            HStack(spacing: PhotodeMetrics.glassSpacing) {
+                HStack(spacing: 9) {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 10, height: 10)
+
+                    Text(recordingTime)
+                        .monospacedDigit()
+                }
+                .photodeHeaderTypography()
+                .padding(.horizontal, 14)
+                .frame(height: PhotodeMetrics.glassControlHeight)
+                .photodeGlassCapsule()
+
+                Button("Cancel", action: cancelVideoNoteRecording)
+                    .photodeHeaderTypography()
+                    .foregroundStyle(Color.photodeActive)
+                    .padding(.horizontal, 16)
+                    .frame(height: PhotodeMetrics.glassControlHeight)
+                    .contentShape(Capsule())
+                    .photodeGlassCapsule(interactive: true)
+                    .buttonStyle(PhotodePressButtonStyle())
+                    .frame(minHeight: PhotodeMetrics.minimumHitArea)
+                    .disabled(isFinishingVideoNote)
+
+                Spacer(minLength: 8)
+
+                Button(action: finishVideoNoteRecording) {
+                    Text("S.")
+                        .photodeHeaderTypography()
+                        .foregroundStyle(Color.photodeActive)
+                        .frame(
+                            width: PhotodeMetrics.glassControlHeight,
+                            height: PhotodeMetrics.glassControlHeight
+                        )
+                        .contentShape(Circle())
+                        .photodeGlassCircle(interactive: true)
+                }
+                .buttonStyle(PhotodePressButtonStyle())
+                .frame(
+                    width: PhotodeMetrics.minimumHitArea,
+                    height: PhotodeMetrics.minimumHitArea
+                )
+                .disabled(isFinishingVideoNote)
+                .accessibilityLabel("Send video message")
+            }
+        }
+        .padding(.horizontal, PhotodeMetrics.screenInset)
+        .padding(.top, 8)
+        .padding(.bottom, 0)
+        .task(id: recordingStartedAt) {
+            guard recordingStartedAt != nil else { return }
+            while !Task.isCancelled, isRecordingVideoNote {
+                if let recordingStartedAt {
+                    recordingElapsed = Date().timeIntervalSince(
+                        recordingStartedAt
+                    )
+                    if recordingElapsed >= 59.8 {
+                        finishVideoNoteRecording()
+                        break
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    private var recordingTime: String {
+        String(format: "%.2f", min(recordingElapsed, 60))
+    }
+
+    private func composerAction() {
+        guard !model.composerText.isEmpty else { return }
+        withAnimation(.spring(duration: 0.3, bounce: 0)) {
+            model.sendMessage()
+        }
+    }
+
+    private func updateTypingState(for text: String) {
+        typingCancelTask?.cancel()
+
+        guard !text.isEmpty else {
+            model.sendChatAction("cancel")
+            return
+        }
+
+        let now = Date()
+        if now.timeIntervalSince(lastTypingSentAt) >= 3 {
+            lastTypingSentAt = now
+            model.sendChatAction("typing")
+        }
+
+        typingCancelTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            model.sendChatAction("cancel")
+        }
+    }
+
+    private func beginVideoNoteRecording() {
+        composerFocused = false
+        recordingElapsed = 0
+        recordingStartedAt = Date()
+        isFinishingVideoNote = false
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        withAnimation(.spring(duration: 0.3, bounce: 0)) {
+            isRecordingVideoNote = true
+        }
+        Task {
+            do {
+                try await videoRecorder.start()
+                model.sendChatAction("recording_video_note")
+            } catch {
+                model.errorMessage = error.localizedDescription
+                cancelVideoNoteRecording()
+            }
+        }
+    }
+
+    private func cancelVideoNoteRecording() {
+        guard !isFinishingVideoNote else { return }
+        isFinishingVideoNote = true
+        recordingStartedAt = nil
+        recordingElapsed = 0
+        withAnimation(.easeInOut(duration: 0.18)) {
+            isRecordingVideoNote = false
+        }
+        Task {
+            _ = try? await videoRecorder.stop(keepingRecording: false)
+            model.sendChatAction("cancel")
+            isFinishingVideoNote = false
+        }
+    }
+
+    private func finishVideoNoteRecording() {
+        guard !isFinishingVideoNote else { return }
+        isFinishingVideoNote = true
+        let duration = max(1, Int(recordingElapsed.rounded(.up)))
+        recordingStartedAt = nil
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+
+        Task {
+            defer {
+                model.sendChatAction("cancel")
+                recordingElapsed = 0
+                isFinishingVideoNote = false
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isRecordingVideoNote = false
+                }
+            }
+
+            do {
+                guard let url = try await videoRecorder.stop(
+                    keepingRecording: true
+                ) else { return }
+                defer { try? FileManager.default.removeItem(at: url) }
+
+                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                model.sendMedia(
+                    TelegramMediaUpload(
+                        data: data,
+                        kind: .videoNote,
+                        fileName: "video-note.mov",
+                        mimeType: "video/quicktime",
+                        duration: duration,
+                        width: 0,
+                        height: 0
+                    )
+                )
+            } catch {
+                model.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    @MainActor
+    private func sendPickedMedia(_ item: PhotosPickerItem) async {
+        defer { selectedMediaItem = nil }
+
+        guard let type = item.supportedContentTypes.first(where: {
+            $0.conforms(to: .movie)
+        }) ?? item.supportedContentTypes.first(where: {
+            $0.conforms(to: .image)
+        }) else {
+            model.errorMessage = "The selected item is not a photo or video."
+            return
+        }
+
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self)
+            else {
+                throw CocoaError(.fileReadUnknown)
+            }
+
+            let isVideo = type.conforms(to: .movie)
+            var width = 0
+            var height = 0
+            if !isVideo, let image = UIImage(data: data) {
+                width = Int(image.size.width * image.scale)
+                height = Int(image.size.height * image.scale)
+            }
+
+            let fileExtension = type.preferredFilenameExtension
+                ?? (isVideo ? "mov" : "jpg")
+            model.sendMedia(
+                TelegramMediaUpload(
+                    data: data,
+                    kind: isVideo ? .video : .photo,
+                    fileName: "telegram-upload.\(fileExtension)",
+                    mimeType: type.preferredMIMEType
+                        ?? (isVideo ? "video/quicktime" : "image/jpeg"),
+                    duration: 0,
+                    width: width,
+                    height: height
+                )
+            )
+        } catch {
+            model.errorMessage = error.localizedDescription
+        }
     }
 
     private func dismissKeyboardThenClose() {
@@ -284,5 +675,23 @@ private struct MessageGroup: Identifiable {
 
     var labelColor: Color {
         delivery == .outgoingUnread ? .photodeDisabled : .photodeActive
+    }
+}
+
+private struct MediaPickerGlassLabel: View {
+    let isDisabled: Bool
+
+    var body: some View {
+        Text("M.")
+            .photodeHeaderTypography()
+            .foregroundStyle(
+                isDisabled ? Color.photodeDisabled : Color.photodeActive
+            )
+            .frame(
+                width: PhotodeMetrics.glassControlHeight,
+                height: PhotodeMetrics.glassControlHeight
+            )
+            .contentShape(Circle())
+            .photodeGlassCircle(interactive: true)
     }
 }
