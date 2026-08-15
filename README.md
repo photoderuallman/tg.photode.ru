@@ -33,13 +33,14 @@ Open a private tunnel from the Mac:
 ```bash
 ssh -N \
   -L 18080:127.0.0.1:8080 \
-  -i ~/.ssh/tg_photode_vps_ed25519 \
-  root@195.19.144.52
+  -i ~/.ssh/your_vps_key \
+  root@192.0.2.10
 ```
 
 Then open <http://127.0.0.1:18080>.
 
-The active TRUST VPN subscription reported an expiry date of 2026-08-11. Renew it or replace the Xray outbound before that date.
+The host and key path above are documentation placeholders. Keep real infrastructure
+coordinates in protected deployment configuration outside the repository.
 
 ## Local setup
 
