@@ -16,8 +16,8 @@
       "auto_redirect": false,
       "strict_route": false,
       "route_exclude_address": [
-        "194.58.125.120/32",
-        "194.67.94.40/32"
+        "203.0.113.10/32",
+        "203.0.113.11/32"
       ],
       "include_uid": [
         989
